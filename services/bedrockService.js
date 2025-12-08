@@ -52,13 +52,23 @@ exports.analyzeImage = async (base64Image) => {
   try {
     const response = await client.send(command);
     const responseBody = JSON.parse(new TextDecoder().decode(response.body));
+
+    console.log("Bedrock Response:", JSON.stringify(responseBody, null, 2));
+
     let rawText = responseBody.content[0].text;
 
     // Clean markdown if present
     rawText = rawText.replace(/```json/g, "").replace(/```/g, "").trim();
+
+    console.log("Parsed Text:", rawText);
+
     return JSON.parse(rawText);
   } catch (error) {
-    console.error("Bedrock Service Error:", error);
-    throw new Error("AI Analysis Failed");
+    console.error("Bedrock Service Error Details:");
+    console.error("Error Name:", error.name);
+    console.error("Error Message:", error.message);
+    console.error("Error Code:", error.$metadata?.httpStatusCode);
+    console.error("Full Error:", JSON.stringify(error, null, 2));
+    throw new Error("AI Analysis Failed: " + error.message);
   }
 };

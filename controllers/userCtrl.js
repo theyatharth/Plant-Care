@@ -1,104 +1,78 @@
 const db = require('../configure/dbConfig');
-const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 
-// Register new user
-exports.register = async (req, res) => {
-  const { email, password, name, phone } = req.body;
+// Login or Register user (after OTP verification in FlutterFlow)
+exports.loginOrRegister = async (req, res) => {
+  const { phone, name, email } = req.body;
 
-  if (!email || !password || !name) {
-    return res.status(400).json({ error: 'Email, password, and name are required' });
+  if (!phone) {
+    return res.status(400).json({ error: 'Phone number is required' });
+  }
+
+  // Validate phone format (10 digits for Indian numbers)
+  const phoneRegex = /^[6-9]\d{9}$/;
+  if (!phoneRegex.test(phone)) {
+    return res.status(400).json({ error: 'Invalid phone number format. Use 10-digit Indian mobile number' });
   }
 
   try {
     // Check if user exists
-    const existingUser = await db.query('SELECT id FROM users WHERE email = $1', [email]);
-    if (existingUser.rows.length > 0) {
-      return res.status(400).json({ error: 'Email already registered' });
-    }
-
-    // Hash password
-    const passwordHash = await bcrypt.hash(password, 10);
-
-    // Insert user
-    const result = await db.query(
-      'INSERT INTO users (email, password_hash, name, phone) VALUES ($1, $2, $3, $4) RETURNING id, email, name, phone, created_at',
-      [email, passwordHash, name, phone || null]
+    let userResult = await db.query(
+      'SELECT id, phone, name, email, created_at FROM users WHERE phone = $1',
+      [phone]
     );
 
-    const user = result.rows[0];
+    let user;
+    let isNewUser = false;
 
-    // Generate JWT
-    const token = jwt.sign(
-      { userId: user.id, email: user.email },
-      process.env.JWT_SECRET,
-      { expiresIn: '30d' }
-    );
-
-    res.status(201).json({
-      success: true,
-      token,
-      user: {
-        id: user.id,
-        email: user.email,
-        name: user.name,
-        phone: user.phone,
-        createdAt: user.created_at
+    if (userResult.rows.length === 0) {
+      // New user - create account
+      if (!name) {
+        return res.status(400).json({ error: 'Name is required for new users' });
       }
-    });
-  } catch (error) {
-    console.error('Register Error:', error.message);
-    res.status(500).json({ error: 'Registration failed' });
-  }
-};
 
-// Login user
-exports.login = async (req, res) => {
-  const { email, password } = req.body;
+      const insertResult = await db.query(
+        'INSERT INTO users (phone, name, email) VALUES ($1, $2, $3) RETURNING id, phone, name, email, created_at',
+        [phone, name, email || null]
+      );
+      user = insertResult.rows[0];
+      isNewUser = true;
+    } else {
+      // Existing user - login
+      user = userResult.rows[0];
 
-  if (!email || !password) {
-    return res.status(400).json({ error: 'Email and password required' });
-  }
-
-  try {
-    // Find user
-    const result = await db.query(
-      'SELECT id, email, password_hash, name, phone FROM users WHERE email = $1',
-      [email]
-    );
-
-    if (result.rows.length === 0) {
-      return res.status(401).json({ error: 'Invalid credentials' });
+      // Update name/email if provided
+      if (name || email) {
+        const updateResult = await db.query(
+          'UPDATE users SET name = COALESCE($1, name), email = COALESCE($2, email) WHERE id = $3 RETURNING id, phone, name, email, created_at',
+          [name, email, user.id]
+        );
+        user = updateResult.rows[0];
+      }
     }
 
-    const user = result.rows[0];
-
-    // Verify password
-    const isValid = await bcrypt.compare(password, user.password_hash);
-    if (!isValid) {
-      return res.status(401).json({ error: 'Invalid credentials' });
-    }
-
-    // Generate JWT
+    // Generate JWT token
     const token = jwt.sign(
-      { userId: user.id, email: user.email },
+      { userId: user.id, phone: user.phone },
       process.env.JWT_SECRET,
       { expiresIn: '30d' }
     );
 
     res.json({
       success: true,
+      isNewUser,
       token,
       user: {
         id: user.id,
-        email: user.email,
+        phone: user.phone,
         name: user.name,
-        phone: user.phone
+        email: user.email,
+        createdAt: user.created_at
       }
     });
   } catch (error) {
-    console.error('Login Error:', error);
-    res.status(500).json({ error: 'Login failed' });
+    console.error('Login/Register Error:', error.message);
+    res.status(500).json({ error: 'Authentication failed' });
   }
 };
 
@@ -118,5 +92,33 @@ exports.getProfile = async (req, res) => {
   } catch (error) {
     console.error('Get Profile Error:', error);
     res.status(500).json({ error: 'Failed to fetch profile' });
+  }
+};
+
+// Update user profile
+exports.updateProfile = async (req, res) => {
+  const { name, email } = req.body;
+
+  if (!name && !email) {
+    return res.status(400).json({ error: 'Name or email is required' });
+  }
+
+  try {
+    const result = await db.query(
+      'UPDATE users SET name = COALESCE($1, name), email = COALESCE($2, email) WHERE id = $3 RETURNING id, phone, name, email, created_at',
+      [name, email, req.user.userId]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    res.json({
+      success: true,
+      user: result.rows[0]
+    });
+  } catch (error) {
+    console.error('Update Profile Error:', error.message);
+    res.status(500).json({ error: 'Failed to update profile' });
   }
 };

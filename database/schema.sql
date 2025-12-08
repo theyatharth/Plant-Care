@@ -16,10 +16,9 @@ CREATE TABLE IF NOT EXISTS plant_species (
 -- 2. Users Table
 CREATE TABLE IF NOT EXISTS users (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    email VARCHAR(255) UNIQUE NOT NULL,
-    phone VARCHAR(100) UNIQUE,
+    email VARCHAR(255) UNIQUE,
+    phone VARCHAR(100) UNIQUE NOT NULL,
     name VARCHAR(100),
-    password_hash VARCHAR(255) NOT NULL,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
