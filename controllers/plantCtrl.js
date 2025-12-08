@@ -6,17 +6,24 @@ exports.scanPlant = async (req, res) => {
   const { image } = req.body;
   const userId = req.user.userId; // From JWT token
 
+  console.log('📸 Scan request received for user:', userId);
+
   if (!image) {
     return res.status(400).json({ error: "Image required" });
   }
 
-  const client = await db.connect();
+  let client;
 
   try {
     // Step A: Get Intelligence from Bedrock Service
+    console.log('🤖 Calling Bedrock AI service...');
     const aiResult = await bedrockService.analyzeImage(image);
+    console.log('✅ AI Analysis complete:', aiResult.plant_name);
 
+    // Get database connection
+    client = await db.connect();
     await client.query('BEGIN');
+    console.log('📊 Database transaction started');
 
     // Step B: Update Encyclopedia (Plant Species Table)
     const speciesQuery = `
@@ -35,41 +42,50 @@ exports.scanPlant = async (req, res) => {
       aiResult.care_guide
     ]);
     const speciesId = speciesRes.rows[0].id;
+    console.log('🌿 Plant species saved/updated:', speciesId);
 
     // Step C: Log the Scan (Scans Table)
-    // Note: plant_id is NULL for now (not linked to user_plants yet)
     const scanQuery = `
       INSERT INTO scans (user_id, plant_id, image_url, ai_raw_response, is_healthy, disease_name)
       VALUES ($1, $2, $3, $4, $5, $6)
-      RETURNING id;
+      RETURNING id, created_at;
     `;
     // In prod, upload image to S3 here and save URL. Using placeholder for now.
-    const fakeUrl = "s3://bucket/image_" + Date.now();
+    const imageUrl = "s3://bucket/image_" + Date.now();
 
     const scanRes = await client.query(scanQuery, [
       userId,
       null, // plant_id is null (not linked to user's garden yet)
-      fakeUrl,
-      aiResult,
+      imageUrl,
+      JSON.stringify(aiResult), // Ensure it's stringified
       aiResult.health_status.toLowerCase() === 'healthy',
       aiResult.disease_name || 'None'
     ]);
 
     await client.query('COMMIT');
+    console.log('✅ Scan saved to database:', scanRes.rows[0].id);
 
     res.status(200).json({
       success: true,
       scanId: scanRes.rows[0].id,
       speciesId: speciesId,
-      result: aiResult
+      result: aiResult,
+      savedAt: scanRes.rows[0].created_at
     });
 
   } catch (error) {
-    await client.query('ROLLBACK');
-    console.error("Controller Error:", error);
+    if (client) {
+      await client.query('ROLLBACK');
+      console.log('⚠️ Database transaction rolled back');
+    }
+    console.error("❌ Scan Controller Error:", error.message);
+    console.error("Error stack:", error.stack);
     res.status(500).json({ error: error.message });
   } finally {
-    client.release();
+    if (client) {
+      client.release();
+      console.log('🔌 Database connection released');
+    }
   }
 };
 
@@ -77,6 +93,9 @@ exports.scanPlant = async (req, res) => {
 exports.getHistory = async (req, res) => {
   try {
     const userId = req.user.userId; // From JWT token
+
+    console.log('📜 Fetching scan history for user:', userId);
+
     const query = `
       SELECT 
         s.id, 
@@ -84,15 +103,37 @@ exports.getHistory = async (req, res) => {
         s.disease_name, 
         s.is_healthy, 
         s.image_url,
-        s.ai_raw_response
+        s.ai_raw_response,
+        s.plant_id
       FROM scans s
       WHERE s.user_id = $1
       ORDER BY s.created_at DESC
     `;
     const result = await db.query(query, [userId]);
-    res.json({ scans: result.rows });
+
+    console.log(`✅ Found ${result.rows.length} scans for user`);
+
+    // Format the response to include parsed plant info
+    const formattedScans = result.rows.map(scan => ({
+      id: scan.id,
+      createdAt: scan.created_at,
+      isHealthy: scan.is_healthy,
+      diseaseName: scan.disease_name,
+      imageUrl: scan.image_url,
+      plantName: scan.ai_raw_response?.plant_name || 'Unknown',
+      scientificName: scan.ai_raw_response?.scientific_name || 'Unknown',
+      healthStatus: scan.ai_raw_response?.health_status || 'Unknown',
+      confidence: scan.ai_raw_response?.confidence || 0,
+      fullResponse: scan.ai_raw_response
+    }));
+
+    res.json({
+      success: true,
+      count: formattedScans.length,
+      scans: formattedScans
+    });
   } catch (error) {
-    console.error('Get History Error:', error);
+    console.error('❌ Get History Error:', error.message);
     res.status(500).json({ error: "Failed to fetch history" });
   }
 };

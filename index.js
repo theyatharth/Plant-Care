@@ -21,10 +21,13 @@ app.use('/api/users', userRoutes);
 app.use('/api/plants', plantRoutes);
 app.use('/api/encyclopedia', encyclopediaRoutes);
 
-// Health Check
+// Health Check Routes
+const healthCtrl = require('./controllers/healthCtrl');
 app.get('/', (req, res) => {
   res.send('🌿 Plant Care API is Running');
 });
+app.get('/health', healthCtrl.healthCheck);
+app.get('/diagnostic', healthCtrl.dbDiagnostic);
 
 // Start Server
 app.listen(PORT, () => {

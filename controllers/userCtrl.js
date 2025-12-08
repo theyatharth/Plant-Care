@@ -71,8 +71,15 @@ exports.loginOrRegister = async (req, res) => {
       }
     });
   } catch (error) {
-    console.error('Login/Register Error:', error.message);
-    res.status(500).json({ error: 'Authentication failed' });
+    console.error('❌ Login/Register Error:');
+    console.error('Error Message:', error.message);
+    console.error('Error Code:', error.code);
+    console.error('Error Detail:', error.detail);
+    console.error('Full Error:', error);
+    res.status(500).json({
+      error: 'Authentication failed',
+      details: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
   }
 };
 
