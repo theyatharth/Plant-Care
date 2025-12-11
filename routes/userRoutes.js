@@ -10,4 +10,8 @@ router.post('/auth', userCtrl.loginOrRegister);
 router.get('/profile', verifyToken, userCtrl.getProfile);
 router.put('/profile', verifyToken, userCtrl.updateProfile);
 
+// Profile photo routes
+router.post('/profile/photo', verifyToken, userCtrl.uploadProfilePhoto);
+router.get('/profile/photo', verifyToken, userCtrl.getProfilePhoto);
+
 module.exports = router;

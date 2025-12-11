@@ -1,5 +1,6 @@
 const db = require('../configure/dbConfig');
 const jwt = require('jsonwebtoken');
+const s3Service = require('../services/s3Service');
 
 // Login or Register user (after OTP verification in FlutterFlow)
 exports.loginOrRegister = async (req, res) => {
@@ -18,7 +19,7 @@ exports.loginOrRegister = async (req, res) => {
   try {
     // Check if user exists
     let userResult = await db.query(
-      'SELECT id, phone, name, email, created_at FROM users WHERE phone = $1',
+      'SELECT id, phone, name, email, profile_photo_url, created_at FROM users WHERE phone = $1',
       [phone]
     );
 
@@ -32,7 +33,7 @@ exports.loginOrRegister = async (req, res) => {
       }
 
       const insertResult = await db.query(
-        'INSERT INTO users (phone, name, email) VALUES ($1, $2, $3) RETURNING id, phone, name, email, created_at',
+        'INSERT INTO users (phone, name, email) VALUES ($1, $2, $3) RETURNING id, phone, name, email, profile_photo_url, created_at',
         [phone, name, email || null]
       );
       user = insertResult.rows[0];
@@ -44,7 +45,7 @@ exports.loginOrRegister = async (req, res) => {
       // Update name/email if provided
       if (name || email) {
         const updateResult = await db.query(
-          'UPDATE users SET name = COALESCE($1, name), email = COALESCE($2, email) WHERE id = $3 RETURNING id, phone, name, email, created_at',
+          'UPDATE users SET name = COALESCE($1, name), email = COALESCE($2, email) WHERE id = $3 RETURNING id, phone, name, email, profile_photo_url, created_at',
           [name, email, user.id]
         );
         user = updateResult.rows[0];
@@ -67,6 +68,7 @@ exports.loginOrRegister = async (req, res) => {
         phone: user.phone,
         name: user.name,
         email: user.email,
+        profilePhotoUrl: user.profile_photo_url,
         createdAt: user.created_at
       }
     });
@@ -87,7 +89,7 @@ exports.loginOrRegister = async (req, res) => {
 exports.getProfile = async (req, res) => {
   try {
     const result = await db.query(
-      'SELECT id, email, name, phone, created_at FROM users WHERE id = $1',
+      'SELECT id, email, name, phone, profile_photo_url, created_at FROM users WHERE id = $1',
       [req.user.userId]
     );
 
@@ -112,7 +114,7 @@ exports.updateProfile = async (req, res) => {
 
   try {
     const result = await db.query(
-      'UPDATE users SET name = COALESCE($1, name), email = COALESCE($2, email) WHERE id = $3 RETURNING id, phone, name, email, created_at',
+      'UPDATE users SET name = COALESCE($1, name), email = COALESCE($2, email) WHERE id = $3 RETURNING id, phone, name, email, profile_photo_url, created_at',
       [name, email, req.user.userId]
     );
 
@@ -127,5 +129,83 @@ exports.updateProfile = async (req, res) => {
   } catch (error) {
     console.error('Update Profile Error:', error.message);
     res.status(500).json({ error: 'Failed to update profile' });
+  }
+};
+
+// Upload profile photo
+exports.uploadProfilePhoto = async (req, res) => {
+  const { image } = req.body;
+  const userId = req.user.userId;
+
+  console.log('📸 Profile photo upload request for user:', userId);
+
+  if (!image) {
+    return res.status(400).json({ error: "Profile photo image required" });
+  }
+
+  try {
+    // Upload image to S3 in profile-photos folder
+    console.log('📤 Uploading profile photo to S3...');
+    const imageUrl = await s3Service.uploadProfilePhoto(image, userId);
+    console.log('✅ Profile photo uploaded:', imageUrl);
+
+    // Update user's profile photo URL in database
+    const result = await db.query(
+      'UPDATE users SET profile_photo_url = $1 WHERE id = $2 RETURNING id, phone, name, email, profile_photo_url, created_at',
+      [imageUrl, userId]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    console.log('✅ Profile photo URL saved to database');
+
+    res.json({
+      success: true,
+      message: 'Profile photo uploaded successfully',
+      profilePhotoUrl: imageUrl,
+      user: result.rows[0]
+    });
+
+  } catch (error) {
+    console.error('❌ Profile Photo Upload Error:', error.message);
+    console.error('Error stack:', error.stack);
+    res.status(500).json({ error: error.message });
+  }
+};
+
+// Get profile photo URL
+exports.getProfilePhoto = async (req, res) => {
+  try {
+    const result = await db.query(
+      'SELECT profile_photo_url FROM users WHERE id = $1',
+      [req.user.userId]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    const profilePhotoUrl = result.rows[0].profile_photo_url;
+
+    if (!profilePhotoUrl) {
+      return res.json({
+        success: true,
+        hasProfilePhoto: false,
+        profilePhotoUrl: null,
+        message: 'No profile photo uploaded'
+      });
+    }
+
+    res.json({
+      success: true,
+      hasProfilePhoto: true,
+      profilePhotoUrl: profilePhotoUrl
+    });
+
+  } catch (error) {
+    console.error('❌ Get Profile Photo Error:', error.message);
+    res.status(500).json({ error: 'Failed to get profile photo' });
   }
 };
