@@ -1,11 +1,20 @@
 const { BedrockRuntimeClient, InvokeModelCommand } = require("@aws-sdk/client-bedrock-runtime");
 
+// Load environment variables
+require('dotenv').config();
+
+// Debug credentials
+console.log('🔧 Bedrock Service Debug:');
+console.log('- AWS Access Key:', process.env.AWS_ACCESS_KEY_ID?.substring(0, 8) + '...');
+console.log('- AWS Secret Key:', process.env.AWS_SECRET_ACCESS_KEY ? 'Set (length: ' + process.env.AWS_SECRET_ACCESS_KEY.length + ')' : 'Missing');
+console.log('- Region: us-east-1');
+
 // Initialize Client (Always us-east-1 for Cross-Region Inference)
 const client = new BedrockRuntimeClient({
   region: "us-east-1",
   credentials: {
-    accessKeyId: process.env.AWS_ACCESS_KEY_ID,
-    secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY
+    accessKeyId: process.env.AWS_ACCESS_KEY_ID?.trim(),
+    secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY?.trim()
   }
 });
 
@@ -25,8 +34,27 @@ Return ONLY a JSON object with this structure:
 `;
 
 exports.analyzeImage = async (base64Image) => {
+  console.log('🔍 Image Analysis Debug:');
+  console.log('- Original image length:', base64Image.length);
+  console.log('- Image starts with:', base64Image.substring(0, 50));
+
+  // Extract media type from data URI
+  let mediaType = "image/jpeg"; // default
+  const dataUriMatch = base64Image.match(/^data:image\/(\w+);base64,/);
+  if (dataUriMatch) {
+    const imageFormat = dataUriMatch[1];
+    mediaType = `image/${imageFormat}`;
+    console.log('- Detected media type:', mediaType);
+  }
+
   // Sanitize image string
   const cleanBase64 = base64Image.replace(/^data:image\/\w+;base64,/, "");
+  console.log('- Clean base64 length:', cleanBase64.length);
+
+  // Validate base64
+  if (!cleanBase64 || cleanBase64.length < 100) {
+    throw new Error('Invalid or too small base64 image data');
+  }
 
   const payload = {
     anthropic_version: "bedrock-2023-05-31",
@@ -35,12 +63,15 @@ exports.analyzeImage = async (base64Image) => {
       {
         role: "user",
         content: [
-          { type: "image", source: { type: "base64", media_type: "image/jpeg", data: cleanBase64 } },
+          { type: "image", source: { type: "base64", media_type: mediaType, data: cleanBase64 } },
           { type: "text", text: SYSTEM_PROMPT }
         ]
       }
     ]
   };
+
+  console.log('- Payload media type:', mediaType);
+  console.log('- Payload data length:', cleanBase64.length);
 
   const command = new InvokeModelCommand({
     modelId: "us.anthropic.claude-3-5-sonnet-20240620-v1:0", // US Inference Profile

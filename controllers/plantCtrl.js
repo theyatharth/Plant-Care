@@ -1,5 +1,6 @@
 const db = require('../configure/dbConfig');
 const bedrockService = require('../services/bedrockService');
+const s3Service = require('../services/s3Service');
 
 // 1. Handle Scan Request
 exports.scanPlant = async (req, res) => {
@@ -44,14 +45,17 @@ exports.scanPlant = async (req, res) => {
     const speciesId = speciesRes.rows[0].id;
     console.log('🌿 Plant species saved/updated:', speciesId);
 
-    // Step C: Log the Scan (Scans Table)
+    // Step C: Upload image to S3
+    console.log('📤 Uploading image to S3...');
+    const imageUrl = await s3Service.uploadImage(image, userId);
+    console.log('✅ Image uploaded:', imageUrl);
+
+    // Step D: Log the Scan (Scans Table)
     const scanQuery = `
       INSERT INTO scans (user_id, plant_id, image_url, ai_raw_response, is_healthy, disease_name)
       VALUES ($1, $2, $3, $4, $5, $6)
       RETURNING id, created_at;
     `;
-    // In prod, upload image to S3 here and save URL. Using placeholder for now.
-    const imageUrl = "s3://bucket/image_" + Date.now();
 
     const scanRes = await client.query(scanQuery, [
       userId,
