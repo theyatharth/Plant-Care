@@ -14,4 +14,8 @@ router.put('/profile', verifyToken, userCtrl.updateProfile);
 router.post('/profile/photo', verifyToken, userCtrl.uploadProfilePhoto);
 router.get('/profile/photo', verifyToken, userCtrl.getProfilePhoto);
 
+// Email authentication routes
+router.post('/request-email-otp', userCtrl.requestEmailOTP);
+router.post('/verify-email-otp', userCtrl.verifyEmailOTP);
+
 module.exports = router;

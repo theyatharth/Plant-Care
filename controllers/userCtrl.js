@@ -1,6 +1,8 @@
 const db = require('../configure/dbConfig');
 const jwt = require('jsonwebtoken');
 const s3Service = require('../services/s3Service');
+const emailService = require('../services/emailService');
+const validator = require('validator');
 
 // Login or Register user (after OTP verification in FlutterFlow)
 exports.loginOrRegister = async (req, res) => {
@@ -207,5 +209,154 @@ exports.getProfilePhoto = async (req, res) => {
   } catch (error) {
     console.error('❌ Get Profile Photo Error:', error.message);
     res.status(500).json({ error: 'Failed to get profile photo' });
+  }
+};
+
+// Request Email OTP
+exports.requestEmailOTP = async (req, res) => {
+  const { email } = req.body;
+
+  console.log('📧 Email OTP request for:', email);
+
+  if (!email || !validator.isEmail(email)) {
+    return res.status(400).json({ error: 'Valid email is required' });
+  }
+
+  try {
+    // Check rate limiting
+    const canSend = await emailService.checkRateLimit(email);
+    if (!canSend) {
+      console.log('🚫 Rate limit exceeded for email:', email);
+      return res.status(429).json({
+        error: 'Too many OTP requests. Please try again later.',
+        retryAfter: '1 hour'
+      });
+    }
+
+    // Generate and send OTP
+    const otp = emailService.generateOTP();
+    console.log('🔢 Generated OTP for', email, ':', otp);
+
+    await emailService.sendOTP(email, otp);
+    await emailService.storeOTP(email, otp);
+
+    res.json({
+      success: true,
+      message: 'OTP sent to your email',
+      email: email,
+      expiresIn: `${process.env.OTP_EXPIRY_MINUTES || 10} minutes`
+    });
+
+  } catch (error) {
+    console.error('❌ Email OTP Request Error:', error.message);
+    console.error('Error stack:', error.stack);
+    res.status(500).json({
+      error: 'Failed to send OTP',
+      details: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  }
+};
+
+// Verify Email OTP and Login/Register
+exports.verifyEmailOTP = async (req, res) => {
+  const { email, otp, name } = req.body;
+
+  console.log('🔐 Email OTP verification for:', email, 'with OTP:', otp);
+
+  if (!email || !otp) {
+    return res.status(400).json({ error: 'Email and OTP are required' });
+  }
+
+  if (!validator.isEmail(email)) {
+    return res.status(400).json({ error: 'Valid email is required' });
+  }
+
+  if (!/^\d{6}$/.test(otp)) {
+    return res.status(400).json({ error: 'OTP must be 6 digits' });
+  }
+
+  try {
+    // Verify OTP
+    const otpResult = await emailService.verifyOTP(email, otp);
+    if (!otpResult.success) {
+      console.log('❌ OTP verification failed:', otpResult.message);
+      return res.status(400).json({ error: otpResult.message });
+    }
+
+    // Check if user exists
+    let userResult = await db.query(
+      'SELECT id, phone, name, email, profile_photo_url, created_at, email_verified, primary_login_method FROM users WHERE email = $1',
+      [email]
+    );
+
+    let user;
+    let isNewUser = false;
+
+    if (userResult.rows.length === 0) {
+      // New user - create account
+      if (!name || name.trim().length === 0) {
+        return res.status(400).json({ error: 'Name is required for new users' });
+      }
+
+      console.log('👤 Creating new user with email:', email);
+      const insertResult = await db.query(
+        'INSERT INTO users (email, name, email_verified, primary_login_method) VALUES ($1, $2, $3, $4) RETURNING id, phone, name, email, profile_photo_url, created_at, email_verified, primary_login_method',
+        [email, name.trim(), true, 'email']
+      );
+      user = insertResult.rows[0];
+      isNewUser = true;
+      console.log('✅ New user created with ID:', user.id);
+    } else {
+      // Existing user - login and mark email as verified
+      console.log('👤 Existing user login with email:', email);
+      await db.query(
+        'UPDATE users SET email_verified = TRUE WHERE email = $1',
+        [email]
+      );
+      user = userResult.rows[0];
+      user.email_verified = true;
+      console.log('✅ Existing user email verified, ID:', user.id);
+    }
+
+    // Generate JWT token
+    const token = jwt.sign(
+      {
+        userId: user.id,
+        email: user.email,
+        loginMethod: 'email'
+      },
+      process.env.JWT_SECRET,
+      { expiresIn: '30d' }
+    );
+
+    console.log('🎫 JWT token generated for user:', user.id);
+
+    res.json({
+      success: true,
+      isNewUser,
+      token,
+      loginMethod: 'email',
+      user: {
+        id: user.id,
+        phone: user.phone,
+        name: user.name,
+        email: user.email,
+        profilePhotoUrl: user.profile_photo_url,
+        createdAt: user.created_at,
+        emailVerified: user.email_verified,
+        primaryLoginMethod: user.primary_login_method
+      }
+    });
+
+  } catch (error) {
+    console.error('❌ Email OTP Verification Error:');
+    console.error('Error Message:', error.message);
+    console.error('Error Code:', error.code);
+    console.error('Error Detail:', error.detail);
+    console.error('Full Error:', error);
+    res.status(500).json({
+      error: 'Authentication failed',
+      details: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
   }
 };

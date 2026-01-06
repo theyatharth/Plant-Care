@@ -16,6 +16,19 @@ const userRoutes = require('./routes/userRoutes');
 const plantRoutes = require('./routes/plantRoutes');
 const encyclopediaRoutes = require('./routes/encyclopediaRoutes');
 
+console.log('📋 Loading Discord routes...');
+try {
+  const discordRoutes = require('./routes/discordRoutes');
+  console.log('✅ Discord routes loaded successfully');
+
+  console.log('📋 Registering Discord routes at /api/discord...');
+  app.use('/api/discord', discordRoutes);
+  console.log('✅ Discord routes registered successfully');
+} catch (error) {
+  console.error('❌ Error loading Discord routes:', error.message);
+  console.error('Stack:', error.stack);
+}
+
 // Use Routes
 app.use('/api/users', userRoutes);
 app.use('/api/plants', plantRoutes);

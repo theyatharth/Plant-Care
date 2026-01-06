@@ -2,6 +2,7 @@ const db = require('../configure/dbConfig');
 const bedrockService = require('../services/bedrockService');
 const s3Service = require('../services/s3Service');
 const discordService = require('../services/discordService');
+const discordUserService = require('../services/discordUserService');
 
 // 1. Handle Scan Request
 exports.scanPlant = async (req, res) => {
@@ -167,143 +168,11 @@ exports.getScanById = async (req, res) => {
   }
 };
 
-// // 4. Share Scan to Discord Community
-// exports.shareToDiscord = async (req, res) => {
-//   console.log('🔗 Discord share request received');
-//   console.log('Request body:', req.body);
-//   console.log('User:', req.user);
-
-//   const { scanId, message } = req.body;
-//   const userId = req.user.userId;
-
-//   console.log('🔗 Discord share request for scan:', scanId, 'by user:', userId);
-
-//   if (!scanId) {
-//     console.log('❌ No scan ID provided');
-//     return res.status(400).json({ error: "Scan ID required" });
-//   }
-
-//   let client;
-
-//   try {
-//     console.log('📊 Getting database connection...');
-//     // Get scan details
-//     client = await db.connect();
-//     console.log('✅ Database connected');
-
-//     console.log('🔍 Querying scan data...');
-//     const scanQuery = `
-//       SELECT s.*, u.name, u.email 
-//       FROM scans s
-//       JOIN users u ON s.user_id = u.id
-//       WHERE s.id = $1 AND s.user_id = $2
-//     `;
-//     const scanResult = await client.query(scanQuery, [scanId, userId]);
-//     console.log('📊 Query result rows:', scanResult.rows.length);
-
-//     if (scanResult.rows.length === 0) {
-//       console.log('❌ No scan found for ID:', scanId, 'and user:', userId);
-//       return res.status(404).json({ error: 'Scan not found' });
-//     }
-
-//     const scanData = scanResult.rows[0];
-//     console.log('✅ Scan found:', scanData.ai_raw_response?.plant_name);
-
-//     console.log('📝 Formatting scan data...');
-//     // Format scan data for Discord
-//     const formattedScanData = {
-//       id: scanData.id,
-//       plantName: scanData.ai_raw_response?.plant_name || 'Unknown Plant',
-//       scientificName: scanData.ai_raw_response?.scientific_name || 'Unknown Species',
-//       healthStatus: scanData.ai_raw_response?.health_status || 'Unknown',
-//       isHealthy: scanData.is_healthy,
-//       diseaseName: scanData.disease_name,
-//       confidence: scanData.ai_raw_response?.confidence || 0,
-//       imageUrl: scanData.image_url,
-//       fullResponse: scanData.ai_raw_response,
-//       createdAt: scanData.created_at,
-//       userMessage: message // Optional user message
-//     };
-
-//     const userData = {
-//       name: scanData.name,
-//       email: scanData.email
-//     };
-
-//     console.log('✅ Data formatted - Plant:', formattedScanData.plantName, 'Health:', formattedScanData.healthStatus);
-
-//     // Share to Discord
-//     console.log('📤 Calling Discord service...');
-//     const discordResult = await discordService.shareToDiscord(formattedScanData, userData);
-//     console.log('✅ Discord service completed:', discordResult);
-
-//     // Track the share in database (optional - for analytics)
-//     console.log('📊 Tracking share in database...');
-//     try {
-//       const shareQuery = `
-//         INSERT INTO community_shares (
-//           user_id, 
-//           scan_id, 
-//           platform, 
-//           discord_message_id, 
-//           discord_channel_type, 
-//           user_message, 
-//           shared_at
-//         )
-//         VALUES ($1, $2, $3, $4, $5, $6, CURRENT_TIMESTAMP)
-//         RETURNING id
-//       `;
-//       const shareResult = await client.query(shareQuery, [
-//         userId,
-//         scanId,
-//         'discord',
-//         discordResult.messageId || null, // Discord message ID from response
-//         discordResult.channelType || null, // 'healthy' or 'sick'
-//         message || null // User's optional message
-//       ]);
-//       console.log('✅ Community share tracked:', shareResult.rows[0].id);
-//     } catch (trackError) {
-//       // Don't fail the request if tracking fails
-//       console.log('⚠️ Failed to track share (non-critical):', trackError.message);
-//     }
-
-//     console.log('📤 Sending success response...');
-//     res.json({
-//       success: true,
-//       message: 'Successfully shared to Discord community!',
-//       discord: discordResult,
-//       scanData: {
-//         plantName: formattedScanData.plantName,
-//         healthStatus: formattedScanData.healthStatus,
-//         isHealthy: formattedScanData.isHealthy
-//       }
-//     });
-//     console.log('✅ Response sent successfully');
-
-//   } catch (error) {
-//     console.error('❌ Discord Share Error Details:');
-//     console.error('Error name:', error.name);
-//     console.error('Error message:', error.message);
-//     console.error('Error stack:', error.stack);
-
-//     if (error.code) {
-//       console.error('Error code:', error.code);
-//     }
-
-//     res.status(500).json({
-//       error: 'Failed to share to Discord community',
-//       details: process.env.NODE_ENV === 'development' ? error.message : undefined
-//     });
-//   } finally {
-//     if (client) {
-//       client.release();
-//       console.log('🔌 Database connection released');
-//     }
-//   }
-// };
-// 4. Share Scan to Discord Community (Updated: Fire-and-Forget)
+// 4. Share Scan to Discord Community (Updated for User Authentication)
 exports.shareToDiscord = async (req, res) => {
   console.log('🔗 Discord share request received');
+  console.log('Request body:', req.body);
+  console.log('User:', req.user);
 
   const { scanId, message } = req.body;
   const userId = req.user.userId;
@@ -311,16 +180,39 @@ exports.shareToDiscord = async (req, res) => {
   console.log('🔗 Discord share request for scan:', scanId, 'by user:', userId);
 
   if (!scanId) {
+    console.log('❌ No scan ID provided');
     return res.status(400).json({ error: "Scan ID required" });
   }
 
   let client;
 
   try {
-    // 1. Fetch scan details to get Image and Plant Name
-    // We still need the DB to get the data to populate the Discord card
+    console.log('📊 Getting database connection...');
     client = await db.connect();
+    console.log('✅ Database connected');
 
+    // Check if user has Discord account linked
+    console.log('🔍 Checking Discord connection status...');
+    const discordStatus = await discordUserService.checkDiscordConnection(userId);
+
+    if (!discordStatus.connected) {
+      console.log('❌ User not connected to Discord');
+
+      // Generate Discord auth URL
+      const authData = await discordUserService.initiateDiscordAuth(userId);
+
+      return res.json({
+        success: false,
+        requiresDiscordAuth: true,
+        authUrl: authData.authUrl,
+        message: 'Please connect your Discord account to share with the community',
+        stateToken: authData.stateToken
+      });
+    }
+
+    console.log('✅ User connected to Discord:', discordStatus.discordUsername);
+
+    console.log('🔍 Querying scan data...');
     const scanQuery = `
       SELECT s.*, u.name, u.email 
       FROM scans s
@@ -328,15 +220,18 @@ exports.shareToDiscord = async (req, res) => {
       WHERE s.id = $1 AND s.user_id = $2
     `;
     const scanResult = await client.query(scanQuery, [scanId, userId]);
+    console.log('📊 Query result rows:', scanResult.rows.length);
 
     if (scanResult.rows.length === 0) {
-      console.log('❌ No scan found for ID:', scanId);
+      console.log('❌ No scan found for ID:', scanId, 'and user:', userId);
       return res.status(404).json({ error: 'Scan not found' });
     }
 
     const scanData = scanResult.rows[0];
+    console.log('✅ Scan found:', scanData.ai_raw_response?.plant_name);
 
-    // 2. Format data for Discord Service
+    console.log('📝 Formatting scan data...');
+    // Format scan data for Discord
     const formattedScanData = {
       id: scanData.id,
       plantName: scanData.ai_raw_response?.plant_name || 'Unknown Plant',
@@ -347,33 +242,53 @@ exports.shareToDiscord = async (req, res) => {
       confidence: scanData.ai_raw_response?.confidence || 0,
       imageUrl: scanData.image_url,
       fullResponse: scanData.ai_raw_response,
-      createdAt: scanData.created_at,
-      userMessage: message // Optional user message
+      createdAt: scanData.created_at
     };
 
-    const userData = {
-      name: scanData.name || "PlantCare User",
-      email: scanData.email
-    };
+    console.log('✅ Data formatted - Plant:', formattedScanData.plantName, 'Health:', formattedScanData.healthStatus);
 
-    // 3. Send to Discord
-    console.log('📤 Sending to Discord Webhook...');
-    // We await this to ensure the message is sent successfully before telling the app "Success"
-    await discordService.shareToDiscord(formattedScanData, userData);
+    // Post to Discord as the user
+    console.log('📤 Posting to Discord as user...');
+    const discordResult = await discordUserService.postAsUser(userId, formattedScanData, message);
+    console.log('✅ Discord post completed:', discordResult);
 
-    console.log('✅ Sent to Discord.');
-
-    // 4. DATABASE TRACKING REMOVED
-    // We do NOT insert into 'community_shares' table anymore.
-
-    // 5. Send Success Response
+    console.log('📤 Sending success response...');
     res.json({
       success: true,
-      message: 'Successfully shared to Discord community!'
+      message: 'Successfully shared to Discord community!',
+      discord: {
+        messageId: discordResult.messageId,
+        messageUrl: discordResult.messageUrl,
+        channelId: discordResult.channelId
+      },
+      scanData: {
+        plantName: formattedScanData.plantName,
+        healthStatus: formattedScanData.healthStatus,
+        isHealthy: formattedScanData.isHealthy
+      },
+      discordUser: discordStatus.discordUsername
     });
+    console.log('✅ Response sent successfully');
 
   } catch (error) {
-    console.error('❌ Discord Share Error:', error.message);
+    console.error('❌ Discord Share Error Details:');
+    console.error('Error name:', error.name);
+    console.error('Error message:', error.message);
+    console.error('Error stack:', error.stack);
+
+    if (error.code) {
+      console.error('Error code:', error.code);
+    }
+
+    // Handle specific Discord errors
+    if (error.message.includes('Discord token expired')) {
+      return res.status(401).json({
+        error: 'Discord authentication expired',
+        requiresReauth: true,
+        message: 'Please reconnect your Discord account'
+      });
+    }
+
     res.status(500).json({
       error: 'Failed to share to Discord community',
       details: process.env.NODE_ENV === 'development' ? error.message : undefined
@@ -381,6 +296,7 @@ exports.shareToDiscord = async (req, res) => {
   } finally {
     if (client) {
       client.release();
+      console.log('🔌 Database connection released');
     }
   }
 };
