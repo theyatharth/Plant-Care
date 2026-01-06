@@ -49,34 +49,29 @@ exports.handleCallback = async (req, res) => {
     // Check for OAuth errors
     if (error) {
       console.log('❌ Discord OAuth error:', error);
-      return res.status(400).json({
-        error: 'Discord authentication failed',
-        details: error
-      });
+      // Redirect to app with error
+      return res.redirect(`https://plant-care-hf696l.flutterflow.app/discord-auth-complete?success=false&error=${encodeURIComponent(error)}`);
     }
 
     if (!code || !state) {
-      return res.status(400).json({
-        error: 'Missing authorization code or state'
-      });
+      // Redirect to app with error
+      return res.redirect(`https://plant-care-hf696l.flutterflow.app/discord-auth-complete?success=false&error=${encodeURIComponent('Missing authorization code or state')}`);
     }
 
     // Process the callback
     const result = await discordUserService.handleDiscordCallback(code, state);
 
-    // Return success response (you might want to redirect to your app)
-    res.json({
-      success: true,
-      message: 'Discord account connected successfully!',
-      discordUser: result.discordUser
-    });
+    // Redirect to app with success
+    const redirectUrl = `https://plant-care-hf696l.flutterflow.app/discord-auth-complete?success=true&username=${encodeURIComponent(result.discordUser.username)}`;
+
+    console.log('✅ Discord OAuth successful, redirecting to app');
+    res.redirect(redirectUrl);
 
   } catch (error) {
     console.error('❌ Discord callback error:', error.message);
-    res.status(500).json({
-      error: 'Failed to process Discord authentication',
-      details: process.env.NODE_ENV === 'development' ? error.message : undefined
-    });
+    // Redirect to app with error
+    const redirectUrl = `https://plant-care-hf696l.flutterflow.app/discord-auth-complete?success=false&error=${encodeURIComponent(error.message)}`;
+    res.redirect(redirectUrl);
   }
 };
 

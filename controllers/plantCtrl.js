@@ -1,7 +1,7 @@
 const db = require('../configure/dbConfig');
 const bedrockService = require('../services/bedrockService');
 const s3Service = require('../services/s3Service');
-const discordService = require('../services/discordService');
+
 const discordUserService = require('../services/discordUserService');
 
 // 1. Handle Scan Request
