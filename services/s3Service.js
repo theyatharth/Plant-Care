@@ -4,17 +4,9 @@ const crypto = require('crypto');
 // Load environment variables
 require('dotenv').config();
 
-function detectImageType(base64Image) {
-  if (base64Image.startsWith('data:image/png')) {
-    return { ext: 'png', mime: 'image/png' };
-  }
-  if (base64Image.startsWith('data:image/jpeg') || base64Image.startsWith('data:image/jpg')) {
-    return { ext: 'jpg', mime: 'image/jpeg' };
-  }
-  if (base64Image.startsWith('data:image/webp')) {
-    return { ext: 'webp', mime: 'image/webp' };
-  }
-  throw new Error('Unsupported image format');
+function base64ToBuffer(base64Image) {
+  const clean = base64Image.replace(/^data:image\/\w+;base64,/, "");
+  return Buffer.from(clean, "base64");
 }
 
 const BUCKET_NAME = process.env.AWS_S3_BUCKET_NAME;
@@ -36,74 +28,65 @@ const s3Client = new S3Client({
  * @returns {Promise<string>} - Public URL of uploaded image
  */
 
-exports.uploadImage = async (base64Image, userId) => {
+exports.uploadImage = async (imageInput, userId) => {
   try {
-    console.log('🔧 S3 Upload Debug:');
-    console.log('- Bucket:', BUCKET_NAME);
-    console.log('- Region:', REGION);
-    console.log('- S3 Access Key:', process.env.AWS_S3_ACCESS_KEY_ID?.substring(0, 8) + '...');
-
     if (!BUCKET_NAME) {
-      throw new Error('AWS_S3_BUCKET_NAME not configured');
+      throw new Error("AWS_S3_BUCKET_NAME not configured");
     }
 
-    const { ext, mime } = detectImageType(base64Image);
+    let imageBuffer;
+    let mimeType = "image/jpeg";
 
-    // Remove data URI prefix
-    const base64Data = base64Image.replace(/^data:image\/\w+;base64,/, "");
+    // Case 1: Base64 image (FlutterFlow / Claude)
+    if (typeof imageInput === "string") {
+      imageBuffer = base64ToBuffer(imageInput);
 
-    // Convert to buffer
-    const imageBuffer = Buffer.from(base64Data, 'base64');
-
-    // 🔐 Validate image signature (CRITICAL)
-    const signature = imageBuffer.slice(0, 4).toString('hex');
-    console.log('🧪 Image signature:', signature);
-
-    if (
-      !(
-        signature.startsWith('ffd8') ||      // JPEG
-        signature === '89504e47' ||           // PNG
-        signature === '52494646'              // WEBP (RIFF)
-      )
-    ) {
-      throw new Error('Invalid image binary after base64 decode');
+      const match = imageInput.match(/^data:(image\/\w+);base64,/);
+      if (match) mimeType = match[1];
     }
 
-    const timestamp = Date.now();
-    const randomString = crypto.randomBytes(8).toString('hex');
+    // Case 2: Buffer image (PlantNet)
+    else if (Buffer.isBuffer(imageInput)) {
+      imageBuffer = imageInput;
+    }
 
-    const fileName = `scans/${userId}/${timestamp}-${randomString}.${ext}`;
+    else {
+      throw new Error("Invalid image input type");
+    }
 
-    const uploadParams = {
-      Bucket: BUCKET_NAME,
-      Key: fileName,
-      Body: imageBuffer,
-      ContentType: mime
+    const extMap = {
+      "image/jpeg": "jpg",
+      "image/png": "png",
+      "image/webp": "webp"
     };
 
-    console.log('- Uploading to S3...');
+    const ext = extMap[mimeType] || "jpg";
 
-    // Upload to S3
-    const command = new PutObjectCommand(uploadParams);
-    const result = await s3Client.send(command);
+    const fileName = `scans/${userId}/${Date.now()}-${crypto
+      .randomBytes(6)
+      .toString("hex")}.${ext}`;
 
-    console.log('- Upload result:', result.$metadata?.httpStatusCode);
+    await s3Client.send(
+      new PutObjectCommand({
+        Bucket: BUCKET_NAME,
+        Key: fileName,
+        Body: imageBuffer,
+        ContentType: mimeType
+      })
+    );
 
-    // Construct public URL
     const imageUrl = `https://${BUCKET_NAME}.s3.${REGION}.amazonaws.com/${fileName}`;
 
-    console.log('✅ Image uploaded to S3:', imageUrl);
+    console.log("✅ Image uploaded to S3:", imageUrl);
 
     return imageUrl;
+
   } catch (error) {
-    console.error('❌ S3 Upload Error Details:');
-    console.error('- Error name:', error.name);
-    console.error('- Error message:', error.message);
-    console.error('- Error code:', error.Code || error.$metadata?.httpStatusCode);
-    console.error('- Full error:', error);
-    throw new Error('Failed to upload image to S3: ' + error.message);
+    console.error("❌ S3 Upload Failed:", error.message);
+    throw new Error("Failed to upload image to S3: " + error.message);
   }
 };
+
 
 /**
  * Upload profile photo to S3
