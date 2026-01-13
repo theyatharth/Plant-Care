@@ -11,4 +11,11 @@ router.get('/scan/:scanId', verifyToken, plantCtrl.getScanById);
 // Discord community sharing
 router.post('/share-discord', verifyToken, plantCtrl.shareToDiscord);
 
+// User Feedback to Scan Result
+router.post('/scan/:scanId/feedback', verifyToken, plantCtrl.submitScanFeedback);
+
+// Plant Net API Calling
+router.post('/scan/:scanId/correct', verifyToken, plantCtrl.handleDislikeWithCorrection);
+
+
 module.exports = router;

@@ -38,7 +38,6 @@ exports.initiateAuth = async (req, res) => {
     });
   }
 };
-
 // Handle Discord OAuth2 callback
 exports.handleCallback = async (req, res) => {
   const { code, state, error } = req.query;
@@ -46,32 +45,43 @@ exports.handleCallback = async (req, res) => {
   console.log('🔐 Discord OAuth callback received');
 
   try {
-    // Check for OAuth errors
+    // Discord-side OAuth error
     if (error) {
       console.log('❌ Discord OAuth error:', error);
-      // Redirect to app with error
-      return res.redirect(`https://plant-care-hf696l.flutterflow.app/discord-auth-complete?success=false&error=${encodeURIComponent(error)}`);
+      return res.redirect(
+        `plantdoctor://plantdoctor.com/discord-auth-complete?success=false&error=${encodeURIComponent(error)}`
+      );
     }
 
+    // Missing params (invalid callback)
     if (!code || !state) {
-      // Redirect to app with error
-      return res.redirect(`https://plant-care-hf696l.flutterflow.app/discord-auth-complete?success=false&error=${encodeURIComponent('Missing authorization code or state')}`);
+      return res.redirect(
+        `plantdoctor://plantdoctor.com/discord-auth-complete?success=false&error=${encodeURIComponent(
+          'Missing authorization code or state'
+        )}`
+      );
     }
 
-    // Process the callback
+    // Process OAuth
     const result = await discordUserService.handleDiscordCallback(code, state);
 
-    // Redirect to app with success
-    const redirectUrl = `https://plant-care-hf696l.flutterflow.app/discord-auth-complete?success=true&username=${encodeURIComponent(result.discordUser.username)}`;
+    // Success
+    const redirectUrl =
+      `plantdoctor://plantdoctor.com/discord-auth-complete?success=true&username=${encodeURIComponent(
+        result.discordUser.username
+      )}`;
 
     console.log('✅ Discord OAuth successful, redirecting to app');
-    res.redirect(redirectUrl);
+    return res.redirect(redirectUrl);
 
-  } catch (error) {
-    console.error('❌ Discord callback error:', error.message);
-    // Redirect to app with error
-    const redirectUrl = `https://plant-care-hf696l.flutterflow.app/discord-auth-complete?success=false&error=${encodeURIComponent(error.message)}`;
-    res.redirect(redirectUrl);
+  } catch (err) {
+    console.error('❌ Discord callback error:', err.message);
+
+    return res.redirect(
+      `plantdoctor://plantdoctor.com/discord-auth-complete?success=false&error=${encodeURIComponent(
+        err.message
+      )}`
+    );
   }
 };
 

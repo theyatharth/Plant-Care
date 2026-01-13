@@ -1,4 +1,5 @@
 const { BedrockRuntimeClient, InvokeModelCommand } = require("@aws-sdk/client-bedrock-runtime");
+const { applyPlantGuardrails } = require('../services/plantGuardrails');
 
 // Load environment variables
 require('dotenv').config();
@@ -19,52 +20,77 @@ const client = new BedrockRuntimeClient({
 });
 
 const SYSTEM_PROMPT = `
-You are an expert botanist. Analyze this plant image.
-Return ONLY a JSON object with this structure:
+You are a professional botanist and plant pathologist.
+
+CRITICAL RULES (must follow):
+- You MUST return ONLY a valid JSON object.
+- DO NOT include explanations, headings, markdown, or text outside JSON.
+- DO NOT include phrases like "After analyzing"
+- DO NOT wrap in \`\`\`.
+- If the plant cannot be confidently identified from the image, DO NOT guess.
+- Analyze First, Identify Second: Before naming the plant, list the visible features: Leaf shape, Vein pattern, Fruit/Flower type, Branching.
+- Reject Ambiguity: If the image is blurry or lacks clear fruit/flowers, return "confidence": 0.5 or lower.
+- Confidence Scoring: - 0.95+ requires HD image with MULTIPLE confirming features (Leaves + Fruit + Bark).
+- If you only see leaves, max confidence is 0.8.
+- Only identify a plant if you are at least 80% confident.
+- If confidence is below 0.80, set:
+  - plant_name = "Unknown"
+  - scientific_name = "Unknown"
+  - disease_name = "Unknown"
+  - care_guide = null
+  - treatment = []
+- Confidence must reflect real visual certainty, not assumption.
+- Similar-looking plants must not be confused.
+
+Return ONLY valid JSON in this exact structure:
+
 {
-  "plant_name": "Common Name",
-  "scientific_name": "Scientific Name",
-  "description": "Short description",
-  "health_status": "Healthy" or "Sick",
-  "disease_name": "Disease Name or 'None'",
+  "plant_name": "Common Name or 'Unknown'",
+  "scientific_name": "Scientific Name or 'Unknown'",
+  "description": "Short factual description or 'Insufficient visual data'",
+  "health_status": "Healthy" or "Sick" or "Unknown",
+  "disease_name": "Disease Name or 'None' or 'Unknown'",
   "confidence": 0.0 to 1.0,
-  "care_guide": { "water": "...", "sun": "..." },
+  "care_guide": { "water": "...", "sun": "..." } or null,
   "treatment": ["step 1", "step 2"]
 }
 `;
 
+
 exports.analyzeImage = async (base64Image) => {
-  console.log('🔍 Image Analysis Debug:');
-  console.log('- Original image length:', base64Image.length);
-  console.log('- Image starts with:', base64Image.substring(0, 50));
-
-  // Extract media type from data URI
-  let mediaType = "image/jpeg"; // default
-  const dataUriMatch = base64Image.match(/^data:image\/(\w+);base64,/);
-  if (dataUriMatch) {
-    const imageFormat = dataUriMatch[1];
-    mediaType = `image/${imageFormat}`;
-    console.log('- Detected media type:', mediaType);
-  }
-
-  // Sanitize image string
+  // 1. Sanitize Base64 string
   const cleanBase64 = base64Image.replace(/^data:image\/\w+;base64,/, "");
-  console.log('- Clean base64 length:', cleanBase64.length);
 
-  // Validate base64
-  if (!cleanBase64 || cleanBase64.length < 100) {
-    throw new Error('Invalid or too small base64 image data');
-  }
+  // 2. Detect Media Type (Default to jpeg if unknown)
+  let mediaType = "image/jpeg";
+  const match = base64Image.match(/^data:(image\/\w+);base64,/);
+  if (match) mediaType = match[1];
 
+  // 3. Construct Payload (CORRECTED STRUCTURE)
   const payload = {
     anthropic_version: "bedrock-2023-05-31",
     max_tokens: 2000,
+    temperature: 0.1, // Low temp for factual/strict JSON
+
+    // FIX: System prompt goes HERE, not inside messages
+    system: SYSTEM_PROMPT,
+
     messages: [
       {
         role: "user",
         content: [
-          { type: "image", source: { type: "base64", media_type: mediaType, data: cleanBase64 } },
-          { type: "text", text: SYSTEM_PROMPT }
+          {
+            type: "image",
+            source: {
+              type: "base64",
+              media_type: mediaType,
+              data: cleanBase64
+            }
+          },
+          {
+            type: "text",
+            text: "Analyze this plant image and provide the diagnosis JSON."
+          }
         ]
       }
     ]
@@ -93,7 +119,8 @@ exports.analyzeImage = async (base64Image) => {
 
     console.log("Parsed Text:", rawText);
 
-    return JSON.parse(rawText);
+    const parsed = JSON.parse(rawText);
+    return applyPlantGuardrails(parsed);
   } catch (error) {
     console.error("Bedrock Service Error Details:");
     console.error("Error Name:", error.name);
