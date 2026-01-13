@@ -1,8 +1,15 @@
+const { identifyPlantWithPlantNet } = require('../services/plantNetService');
+const { normalizePlantNetResult } = require('../utils/plantNetNormalizer');
+const { enrichPlantData } = require('../services/plantEnrichmentService');
+const axios = require('axios');
+
 const db = require('../configure/dbConfig');
 const bedrockService = require('../services/bedrockService');
 const s3Service = require('../services/s3Service');
+const { applyPlantGuardrails } = require('../services/plantGuardrails');
 
 const discordUserService = require('../services/discordUserService');
+
 
 // 1. Handle Scan Request
 exports.scanPlant = async (req, res) => {
@@ -18,15 +25,36 @@ exports.scanPlant = async (req, res) => {
   let client;
 
   try {
-    // Step A: Get Intelligence from Bedrock Service
-    console.log('🤖 Calling Bedrock AI service...');
-    const aiResult = await bedrockService.analyzeImage(image);
-    console.log('✅ AI Analysis complete:', aiResult.plant_name);
+    // 1. PARALLEL EXECUTION (Faster!)
+    // Run AI Analysis and S3 Upload at the same time.
+    // They don't depend on each other, so we save ~1-2 seconds of wait time.
+    console.log('🚀 Starting AI Analysis and S3 Upload concurrently...');
 
-    // Get database connection
+    const [rawAIResult, imageUrl] = await Promise.all([
+      bedrockService.analyzeImage(image),
+      s3Service.uploadImage(image, userId)
+    ]);
+
+    // 2. Process AI Result
+    const aiResult = applyPlantGuardrails(rawAIResult);
+
+    // 🔹 Mark source of identification
+    aiResult.source = 'claude';
+
+    // 🔹 Normalize care guide structure (prevent frontend issues)
+    aiResult.care_guide = {
+      water: aiResult.care_guide?.water ?? null,
+      sun: aiResult.care_guide?.sun ?? null,
+      soil: aiResult.care_guide?.soil ?? null,
+      fertilizer: aiResult.care_guide?.fertilizer ?? null
+    };
+
+    console.log('✅ AI & S3 Complete. Plant:', aiResult.plant_name);
+
+    // 3. NOW Start Database Transaction (Fast!)
     client = await db.connect();
     await client.query('BEGIN');
-    console.log('📊 Database transaction started');
+
 
     // Step B: Update Encyclopedia (Plant Species Table)
     const speciesQuery = `
@@ -38,34 +66,50 @@ exports.scanPlant = async (req, res) => {
         care_guide = EXCLUDED.care_guide
       RETURNING id;
     `;
-    const speciesRes = await client.query(speciesQuery, [
-      aiResult.scientific_name,
-      aiResult.plant_name,
-      aiResult.description,
-      aiResult.care_guide
-    ]);
-    const speciesId = speciesRes.rows[0].id;
-    console.log('🌿 Plant species saved/updated:', speciesId);
+    let speciesId = null;
 
-    // Step C: Upload image to S3
-    console.log('📤 Uploading image to S3...');
-    const imageUrl = await s3Service.uploadImage(image, userId);
-    console.log('✅ Image uploaded:', imageUrl);
+    if (aiResult.identification_status === 'Confirmed') {
+      const speciesRes = await client.query(speciesQuery, [
+        aiResult.scientific_name,
+        aiResult.plant_name,
+        aiResult.description,
+        aiResult.care_guide
+      ]);
+      speciesId = speciesRes.rows[0].id;
+
+      console.log('🌿 Confirmed plant species saved:', speciesId);
+    } else {
+      console.log('⚠️ Plant identification uncertain — skipping species save');
+    }
+
 
     // Step D: Log the Scan (Scans Table)
     const scanQuery = `
-      INSERT INTO scans (user_id, plant_id, image_url, ai_raw_response, is_healthy, disease_name)
-      VALUES ($1, $2, $3, $4, $5, $6)
-      RETURNING id, created_at;
+     INSERT INTO scans (
+  user_id,
+  plant_id,
+  image_url,
+  ai_raw_response,
+  is_healthy,
+  disease_name,
+  identification_status,
+  confidence
+)
+VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+RETURNING id, created_at;
+
+
     `;
 
     const scanRes = await client.query(scanQuery, [
       userId,
-      null, // plant_id is null (not linked to user's garden yet)
+      speciesId,
       imageUrl,
-      JSON.stringify(aiResult), // Ensure it's stringified
-      aiResult.health_status.toLowerCase() === 'healthy',
-      aiResult.disease_name || 'None'
+      JSON.stringify(aiResult),
+      aiResult.health_status?.toLowerCase() === 'healthy',
+      aiResult.disease_name || 'None',
+      aiResult.identification_status || 'Unknown',
+      aiResult.confidence || 0
     ]);
 
     await client.query('COMMIT');
@@ -104,40 +148,73 @@ exports.getHistory = async (req, res) => {
 
     const query = `
       SELECT 
-        s.id, 
-        s.created_at, 
-        s.disease_name, 
-        s.is_healthy, 
-        s.image_url,
-        s.ai_raw_response,
-        s.plant_id
-      FROM scans s
-      WHERE s.user_id = $1
-      ORDER BY s.created_at DESC
+  s.id, 
+  s.created_at, 
+  s.image_url,
+  s.ai_raw_response,
+  s.corrected_response,
+  s.is_healthy,
+  s.disease_name
+FROM scans s
+WHERE s.user_id = $1
+ORDER BY s.created_at DESC
     `;
     const result = await db.query(query, [userId]);
 
     console.log(`✅ Found ${result.rows.length} scans for user`);
 
-    // Format the response to include parsed plant info
-    const formattedScans = result.rows.map(scan => ({
-      id: scan.id,
-      createdAt: scan.created_at,
-      isHealthy: scan.is_healthy,
-      diseaseName: scan.disease_name,
-      imageUrl: scan.image_url,
-      plantName: scan.ai_raw_response?.plant_name || 'Unknown',
-      scientificName: scan.ai_raw_response?.scientific_name || 'Unknown',
-      healthStatus: scan.ai_raw_response?.health_status || 'Unknown',
-      confidence: scan.ai_raw_response?.confidence || 0,
-      fullResponse: scan.ai_raw_response
-    }));
+    // // Format the response to include parsed plant info
+    // const formattedScans = result.rows.map(scan => ({
+    //   id: scan.id,
+    //   createdAt: scan.created_at,
+    //   isHealthy: scan.is_healthy,
+    //   diseaseName: scan.disease_name,
+    //   imageUrl: scan.image_url,
+    //   plantName: scan.ai_raw_response?.plant_name || 'Unknown',
+    //   scientificName: scan.ai_raw_response?.scientific_name || 'Unknown',
+    //   healthStatus: scan.ai_raw_response?.health_status || 'Unknown',
+    //   confidence: scan.ai_raw_response?.confidence || 0,
+    //   fullResponse: scan.ai_raw_response
+    // // }));
+    // res.json({
+    //   success: true,
+    //   count: formattedScans.length,
+    //   scans: formattedScans
+    // });
+
+    const formattedScans = result.rows.map(scan => {
+      const response = scan.corrected_response || scan.ai_raw_response || {};
+
+      return {
+        id: scan.id,
+        createdAt: scan.created_at,
+        imageUrl: scan.image_url,
+
+        plantName: response.common_name || response.plant_name || 'Unknown',
+        scientificName: response.scientific_name || 'Unknown',
+
+        healthStatus: response.health_status || 'Unknown',
+        diseaseName: response.disease_name || scan.disease_name || 'None',
+        isHealthy: scan.is_healthy,
+
+        confidence: response.confidence || 0,
+
+        careGuide: response.care_guide || null,
+        treatment: response.treatment || null,
+
+        identificationSource: response.source || 'ai',
+        corrected: Boolean(scan.corrected_response),
+
+        fullResponse: response
+      };
+    });
 
     res.json({
       success: true,
       count: formattedScans.length,
       scans: formattedScans
     });
+
   } catch (error) {
     console.error('❌ Get History Error:', error.message);
     res.status(500).json({ error: "Failed to fetch history" });
@@ -161,7 +238,33 @@ exports.getScanById = async (req, res) => {
       return res.status(404).json({ error: 'Scan not found' });
     }
 
-    res.json({ scan: result.rows[0] });
+    const scan = result.rows[0];
+    const response = scan.corrected_response || scan.ai_raw_response || {};
+
+    res.json({
+      scan: {
+        id: scan.id,
+        createdAt: scan.created_at,
+        imageUrl: scan.image_url,
+
+        plantName: response.common_name || response.plant_name || 'Unknown',
+        scientificName: response.scientific_name || 'Unknown',
+
+        healthStatus: response.health_status || 'Unknown',
+        diseaseName: response.disease_name || scan.disease_name || 'None',
+        isHealthy: scan.is_healthy,
+
+        confidence: response.confidence || 0,
+        careGuide: response.care_guide || null,
+        treatment: response.treatment || null,
+
+        identificationSource: response.source || 'ai',
+        corrected: Boolean(scan.corrected_response),
+
+        raw: response
+      }
+    });
+
   } catch (error) {
     console.error('Get Scan Error:', error);
     res.status(500).json({ error: 'Failed to fetch scan details' });
@@ -234,7 +337,9 @@ exports.shareToDiscord = async (req, res) => {
     // Format scan data for Discord
     const formattedScanData = {
       id: scanData.id,
-      plantName: scanData.ai_raw_response?.plant_name || 'Unknown Plant',
+      plantName: (scanData.ai_raw_response?.identification_status === 'Confirmed' || scanData.ai_raw_response?.plant_name)
+        ? scanData.ai_raw_response.plant_name
+        : 'Unidentified Plant',
       scientificName: scanData.ai_raw_response?.scientific_name || 'Unknown Species',
       healthStatus: scanData.ai_raw_response?.health_status || 'Unknown',
       isHealthy: scanData.is_healthy,
@@ -298,5 +403,147 @@ exports.shareToDiscord = async (req, res) => {
       client.release();
       console.log('🔌 Database connection released');
     }
+  }
+};
+
+// User Feedbback to Scan Result
+exports.submitScanFeedback = async (req, res) => {
+  const { scanId } = req.params;
+  const { feedback } = req.body; // 'like' | 'dislike'
+  const userId = req.user.userId;
+
+  if (!['like', 'dislike'].includes(feedback)) {
+    return res.status(400).json({ error: 'Invalid feedback' });
+  }
+
+  try {
+    const result = await db.query(
+      `
+      UPDATE scans
+      SET user_feedback = $1
+      WHERE id = $2 AND user_id = $3
+      RETURNING *
+      `,
+      [feedback, scanId, userId]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Scan not found' });
+    }
+
+    res.json({
+      success: true,
+      feedback,
+      scanId
+    });
+  } catch (error) {
+    console.error('Feedback Error:', error.message);
+    res.status(500).json({ error: 'Failed to save feedback' });
+  }
+};
+
+// PlantNet API Calling
+exports.handleDislikeWithCorrection = async (req, res) => {
+  const { scanId } = req.params;
+  const userId = req.user.userId;
+
+  console.log('🧪 PlantNet correction triggered for scan:', scanId);
+
+
+  try {
+    const scanResult = await db.query(
+      `
+      SELECT image_url, corrected_response
+  FROM scans
+  WHERE id = $1 AND user_id = $2
+      `,
+      [scanId, userId]
+    );
+
+    if (!scanResult.rows.length) {
+      return res.status(404).json({ error: 'Scan not found' });
+    }
+
+    // 🔥 CACHE CHECK — ADD THIS BLOCK
+    if (scanResult.rows[0].corrected_response) {
+      console.log('⚡ Returning cached PlantNet result');
+      console.log('♻️ Using cached PlantNet correction for scan:', scanId);
+
+      return res.json({
+        source: 'cache',
+        corrected: true,
+        data: scanResult.rows[0].corrected_response
+      });
+    }
+
+    const imageUrl = scanResult.rows[0].image_url;
+
+    // ⬇️ Download image from S3 as buffer (REQUIRED for PlantNet)
+    const imageResponse = await axios.get(imageUrl, {
+      responseType: 'arraybuffer',
+      timeout: 15000
+    });
+
+    const imageBuffer = Buffer.from(imageResponse.data);
+
+    console.log('🧪 Image buffer size for PlantNet:', imageBuffer.length);
+
+    // Call PlantNet
+    const rawPlantNetData = await identifyPlantWithPlantNet(imageBuffer);
+
+    const normalized = normalizePlantNetResult(rawPlantNetData);
+
+    /**
+ * 🔥 NEW STEP: Claude enrichment (disease + care)
+ * PlantNet → WHAT plant
+ * Claude → HEALTH, DISEASE, CARE
+ */
+    let enrichment = {
+      health_status: "Unknown",
+      disease_name: "Unknown",
+      description: "Insufficient confidence for disease diagnosis",
+      care_guide: null,
+      treatment: []
+    };
+
+    const base64Image = `data:image/jpeg;base64,${imageBuffer.toString('base64')}`;
+
+    if (normalized.confidence >= 0.6) {
+      enrichment = await enrichPlantData(
+        {
+          scientific_name: normalized.scientific_name,
+          common_name: normalized.common_name,
+          confidence: normalized.confidence
+        },
+        base64Image
+      );
+    }
+
+    // 🔗 Merge results
+    const finalCorrectedResult = {
+      ...normalized,
+      ...enrichment,
+      source: enrichment.care_guide ? 'plantnet+claude' : 'plantnet-only'
+    };
+
+    // 💾 Save enriched result
+    await db.query(
+      `
+  UPDATE scans
+  SET corrected_response = $1
+  WHERE id = $2
+  `,
+      [finalCorrectedResult, scanId]
+    );
+
+    // 📤 Send to frontend
+    res.json({
+      source: 'plantnet+claude',
+      corrected: true,
+      data: finalCorrectedResult
+    });
+  } catch (error) {
+    console.error('PlantNet correction failed:', error.message);
+    res.status(500).json({ error: 'Plant identification failed' });
   }
 };

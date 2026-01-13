@@ -4,6 +4,19 @@ const crypto = require('crypto');
 // Load environment variables
 require('dotenv').config();
 
+function detectImageType(base64Image) {
+  if (base64Image.startsWith('data:image/png')) {
+    return { ext: 'png', mime: 'image/png' };
+  }
+  if (base64Image.startsWith('data:image/jpeg') || base64Image.startsWith('data:image/jpg')) {
+    return { ext: 'jpg', mime: 'image/jpeg' };
+  }
+  if (base64Image.startsWith('data:image/webp')) {
+    return { ext: 'webp', mime: 'image/webp' };
+  }
+  throw new Error('Unsupported image format');
+}
+
 const BUCKET_NAME = process.env.AWS_S3_BUCKET_NAME;
 const REGION = process.env.AWS_S3_REGION || "ap-south-1";
 
@@ -22,6 +35,7 @@ const s3Client = new S3Client({
  * @param {string} userId - User ID for organizing files
  * @returns {Promise<string>} - Public URL of uploaded image
  */
+
 exports.uploadImage = async (base64Image, userId) => {
   try {
     console.log('🔧 S3 Upload Debug:');
@@ -33,25 +47,38 @@ exports.uploadImage = async (base64Image, userId) => {
       throw new Error('AWS_S3_BUCKET_NAME not configured');
     }
 
-    // Remove data URI prefix if present
+    const { ext, mime } = detectImageType(base64Image);
+
+    // Remove data URI prefix
     const base64Data = base64Image.replace(/^data:image\/\w+;base64,/, "");
 
-    // Convert base64 to buffer
+    // Convert to buffer
     const imageBuffer = Buffer.from(base64Data, 'base64');
-    console.log('- Image size:', imageBuffer.length, 'bytes');
 
-    // Generate unique filename
+    // 🔐 Validate image signature (CRITICAL)
+    const signature = imageBuffer.slice(0, 4).toString('hex');
+    console.log('🧪 Image signature:', signature);
+
+    if (
+      !(
+        signature.startsWith('ffd8') ||      // JPEG
+        signature === '89504e47' ||           // PNG
+        signature === '52494646'              // WEBP (RIFF)
+      )
+    ) {
+      throw new Error('Invalid image binary after base64 decode');
+    }
+
     const timestamp = Date.now();
     const randomString = crypto.randomBytes(8).toString('hex');
-    const fileName = `scans/${userId}/${timestamp}-${randomString}.jpg`;
-    console.log('- File name:', fileName);
 
-    // Prepare S3 upload parameters (removed ACL for now)
+    const fileName = `scans/${userId}/${timestamp}-${randomString}.${ext}`;
+
     const uploadParams = {
       Bucket: BUCKET_NAME,
       Key: fileName,
       Body: imageBuffer,
-      ContentType: 'image/jpeg'
+      ContentType: mime
     };
 
     console.log('- Uploading to S3...');
@@ -98,6 +125,7 @@ exports.uploadProfilePhoto = async (base64Image, userId) => {
     // Remove data URI prefix if present
     const base64Data = base64Image.replace(/^data:image\/\w+;base64,/, "");
 
+    const { ext, mime } = detectImageType(base64Image);
     // Convert base64 to buffer
     const imageBuffer = Buffer.from(base64Data, 'base64');
     console.log('- Profile photo size:', imageBuffer.length, 'bytes');
@@ -105,7 +133,7 @@ exports.uploadProfilePhoto = async (base64Image, userId) => {
     // Generate unique filename for profile photo
     const timestamp = Date.now();
     const randomString = crypto.randomBytes(8).toString('hex');
-    const fileName = `profile-photos/${userId}/${timestamp}-${randomString}.jpg`;
+    const fileName = `profile-photos/${userId}/${timestamp}-${randomString}.${ext}`;
     console.log('- Profile photo file name:', fileName);
 
     // Prepare S3 upload parameters
@@ -113,7 +141,7 @@ exports.uploadProfilePhoto = async (base64Image, userId) => {
       Bucket: BUCKET_NAME,
       Key: fileName,
       Body: imageBuffer,
-      ContentType: 'image/jpeg'
+      ContentType: mime
     };
 
     console.log('- Uploading profile photo to S3...');
