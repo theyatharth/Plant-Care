@@ -508,7 +508,10 @@ exports.handleDislikeWithCorrection = async (req, res) => {
 
     const base64Image = `data:image/jpeg;base64,${imageBuffer.toString('base64')}`;
 
-    if (normalized.confidence >= 0.6) {
+    // 👇 UPDATED: Threshold lowered from 0.6 to 0.1 (10%)
+    // PlantNet scores are often low (e.g., 0.2-0.5), so 0.6 was blocking valid results.
+    if (normalized.confidence >= 0.1) {
+      console.log('🧠 Confidence is acceptable (' + normalized.confidence + '), triggering Claude enrichment...');
       enrichment = await enrichPlantData(
         {
           scientific_name: normalized.scientific_name,
@@ -517,6 +520,17 @@ exports.handleDislikeWithCorrection = async (req, res) => {
         },
         base64Image
       );
+    } else {
+      console.log('⚠️ Confidence too low (' + normalized.confidence + '), skipping enrichment.');
+      // Optional: You could add a fallback care guide here if you want to avoid nulls completely
+      // enrichment.care_guide = { water: "Water carefully.", sun: "Bright light." };
+      enrichment = {
+        care_guide: {
+          water: "Water when topsoil is dry.",
+          sun: "Bright, indirect light."
+        },
+        treatment: ["Monitor plant health."]
+      };
     }
 
     // 🔗 Merge results
