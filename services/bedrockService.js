@@ -22,7 +22,14 @@ const client = new BedrockRuntimeClient({
 const SYSTEM_PROMPT = `
 You are a professional botanist and plant pathologist.
 
-CRITICAL RULES (must follow):
+CRITICAL INSTRUCTIONS:
+STEP 1: GATEKEEPER VERIFICATION
+- Analyze the image. Does it contain a real plant, flower, leaf, fruit, or vegetable?
+- If the image contains random objects (car, person, electronics, blurry blob, furniture, animal), you MUST set "is_plant": false.
+STEP 2: IDENTIFICATION (Only if Step 1 is True)
+- If "is_plant": true, proceed to identify the plant, health status, and care guide.
+- If the image is a plant but is too blurry to identify, set "confidence": 0.
+
 - You MUST return ONLY a valid JSON object.
 - DO NOT include explanations, headings, markdown, or text outside JSON.
 - DO NOT include phrases like "After analyzing"
@@ -44,7 +51,9 @@ CRITICAL RULES (must follow):
 
 Return ONLY valid JSON in this exact structure:
 
+Structure for VALID PLANT:
 {
+  "is_plant": true,
   "plant_name": "Common Name or 'Unknown'",
   "scientific_name": "Scientific Name or 'Unknown'",
   "description": "Short factual description or 'Insufficient visual data'",
@@ -53,6 +62,18 @@ Return ONLY valid JSON in this exact structure:
   "confidence": 0.0 to 1.0,
   "care_guide": { "water": "...", "sun": "..." } or null,
   "treatment": ["step 1", "step 2"]
+}
+  Structure for INVALID OBJECT (Not a plant):
+{
+  "is_plant": false,
+  "plant_name": "Invalid Object",
+  "scientific_name": "N/A",
+  "description": "Image does not contain a plant.",
+  "health_status": "Unknown",
+  "disease_name": "Unknown",
+  "confidence": 0,
+  "care_guide": null,
+  "treatment": []
 }
 `;
 
@@ -120,6 +141,9 @@ exports.analyzeImage = async (base64Image) => {
     console.log("Parsed Text:", rawText);
 
     const parsed = JSON.parse(rawText);
+    // Ensure is_plant exists (default to true if missing for backward compatibility)
+    if (parsed.is_plant === undefined) parsed.is_plant = true;
+
     return applyPlantGuardrails(parsed);
   } catch (error) {
     console.error("Bedrock Service Error Details:");
