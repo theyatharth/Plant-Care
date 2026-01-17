@@ -11,6 +11,141 @@ const { applyPlantGuardrails } = require('../services/plantGuardrails');
 const discordUserService = require('../services/discordUserService');
 
 
+// // 1. Handle Scan Request
+// exports.scanPlant = async (req, res) => {
+//   const { image } = req.body;
+//   const userId = req.user.userId; // From JWT token
+
+//   console.log('📸 Scan request received for user:', userId);
+
+//   if (!image) {
+//     return res.status(400).json({ error: "Image required" });
+//   }
+
+//   let client;
+
+//   try {
+//     // 1. PARALLEL EXECUTION (Faster!)
+//     // Run AI Analysis and S3 Upload at the same time.
+//     // They don't depend on each other, so we save ~1-2 seconds of wait time.
+//     console.log('🚀 Starting AI Analysis and S3 Upload concurrently...');
+
+//     const [rawAIResult, imageUrl] = await Promise.all([
+//       bedrockService.analyzeImage(image),
+//       s3Service.uploadImage(image, userId)
+//     ]);
+
+//     // 2. Process AI Result
+//     const aiResult = applyPlantGuardrails(rawAIResult);
+
+//     // 🔹 Mark source of identification
+//     aiResult.source = 'claude';
+
+//     // 🛑 LOGIC FOR INVALID PLANTS
+//     const isValidPlant = aiResult.is_plant !== false; // Default to true if missing
+
+//     if (!isValidPlant) {
+//       console.log('🚫 Gatekeeper: Image is NOT a plant.');
+//       // Force values for invalid objects to ensure clean DB data
+//       aiResult.plant_name = "Invalid Object";
+//       aiResult.confidence = 0;
+//       aiResult.care_guide = null;
+//     } else {
+//     // 🔹 Normalize care guide structure (prevent frontend issues)
+//     aiResult.care_guide = {
+//       water: aiResult.care_guide?.water ?? null,
+//       sun: aiResult.care_guide?.sun ?? null,
+//       soil: aiResult.care_guide?.soil ?? null,
+//       fertilizer: aiResult.care_guide?.fertilizer ?? null
+//     };
+
+//     console.log('✅ AI & S3 Complete. Plant:', aiResult.plant_name);
+
+//     // 3. NOW Start Database Transaction (Fast!)
+//     client = await db.connect();
+//     await client.query('BEGIN');
+
+
+// // Step B: Update Encyclopedia (ONLY IF VALID PLANT)
+// let speciesId = null;
+
+// if (isValidPlant && aiResult.identification_status === 'Confirmed') {
+//   const speciesQuery = `
+//     INSERT INTO plant_species (scientific_name, common_name, description, care_guide)
+//     VALUES ($1, $2, $3, $4)
+//     ON CONFLICT (scientific_name) DO UPDATE SET 
+//       common_name = EXCLUDED.common_name,
+//       description = EXCLUDED.description,
+//       care_guide = EXCLUDED.care_guide
+//     RETURNING id;
+//   `;
+
+//   const speciesRes = await client.query(speciesQuery, [
+//     aiResult.scientific_name,
+//     aiResult.plant_name,
+//     aiResult.description,
+//     aiResult.care_guide
+//   ]);
+//   speciesId = speciesRes.rows[0].id;
+//   console.log('🌿 Confirmed plant species saved:', speciesId);
+// } else {
+//   console.log('⚠️ Skipping species save (Invalid object or Uncertain ID)');
+// }
+
+
+//     // Step D: Log the Scan (Scans Table)
+//     const scanQuery = `
+//      INSERT INTO scans (
+//   user_id,
+//   plant_id,
+//   image_url,
+//   ai_raw_response,
+//   is_healthy,
+//   disease_name,
+//   identification_status,
+//   confidence
+// )
+// VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+// RETURNING id, created_at;
+
+
+//     `;
+
+//     const scanRes = await client.query(scanQuery, [
+//       userId,
+//       speciesId,
+//       imageUrl,
+//       JSON.stringify(aiResult),
+//       aiResult.health_status?.toLowerCase() === 'healthy',
+//       aiResult.disease_name || 'None',
+//       isValidPlant ? (aiResult.identification_status || 'Unknown') : 'Invalid Object', // Flag in DB
+//       aiResult.confidence || 0
+//     ]);
+
+//     await client.query('COMMIT');
+//     console.log('✅ Scan saved to database:', scanRes.rows[0].id);
+
+//     // 🔥 RESPONSE FOR FRONTEND
+//     res.status(200).json({
+//       success: true,
+//       valid_plant: isValidPlant, // 👈 KEY FLAG FOR FLUTTERFLOW
+//       message: isValidPlant ? "Scan Successful" : "Invalid object detected",
+//       scanId: scanRes.rows[0].id,
+//       speciesId: speciesId,
+//       result: aiResult,
+//       savedAt: scanRes.rows[0].created_at
+//     });
+
+
+//   }catch (error) {
+//     if (client) await client.query('ROLLBACK');
+//     console.error("❌ Scan Controller Error:", error.message);
+//     res.status(500).json({ error: error.message });
+//   } finally {
+//     if (client) client.release();
+//   }
+//   }
+
 // 1. Handle Scan Request
 exports.scanPlant = async (req, res) => {
   const { image } = req.body;
@@ -22,12 +157,11 @@ exports.scanPlant = async (req, res) => {
     return res.status(400).json({ error: "Image required" });
   }
 
-  let client;
+  let client = null;
 
   try {
     // 1. PARALLEL EXECUTION (Faster!)
     // Run AI Analysis and S3 Upload at the same time.
-    // They don't depend on each other, so we save ~1-2 seconds of wait time.
     console.log('🚀 Starting AI Analysis and S3 Upload concurrently...');
 
     const [rawAIResult, imageUrl] = await Promise.all([
@@ -37,38 +171,86 @@ exports.scanPlant = async (req, res) => {
 
     // 2. Process AI Result
     const aiResult = applyPlantGuardrails(rawAIResult);
-
-    // 🔹 Mark source of identification
     aiResult.source = 'claude';
 
-    // 🔹 Normalize care guide structure (prevent frontend issues)
-    aiResult.care_guide = {
-      water: aiResult.care_guide?.water ?? null,
-      sun: aiResult.care_guide?.sun ?? null,
-      soil: aiResult.care_guide?.soil ?? null,
-      fertilizer: aiResult.care_guide?.fertilizer ?? null
-    };
+    // Default to true if missing to prevent breaking older logic
+    const isValidPlant = aiResult.is_plant !== false;
 
-    console.log('✅ AI & S3 Complete. Plant:', aiResult.plant_name);
+    // 🛑 LOGIC FOR INVALID PLANTS
+    if (!isValidPlant) {
+      console.log('🚫 Gatekeeper: Image is NOT a plant.');
+      // Force values for invalid objects to ensure clean DB data
+      aiResult.plant_name = "Invalid Object";
+      aiResult.confidence = 0;
+      aiResult.care_guide = null;
+    } else {
+      console.log('🌿 Valid plant detected:', aiResult.plant_name);
+      // 🔹 Normalize care guide structure ONLY for valid plants
+      aiResult.care_guide = {
+        water: aiResult.care_guide?.water ?? null,
+        sun: aiResult.care_guide?.sun ?? null,
+        soil: aiResult.care_guide?.soil ?? null,
+        fertilizer: aiResult.care_guide?.fertilizer ?? null
+      };
+    }
 
-    // 3. NOW Start Database Transaction (Fast!)
+    // --- STRATEGY: SPLIT PATHS TO PREVENT HANGING ---
+
+    // 🔴 SCENARIO A: INVALID PLANT (Fast Path - No Transaction)
+    // We use a direct pool query here. It is faster and safer for logging bad data.
+    if (!isValidPlant) {
+      const scanQuery = `
+        INSERT INTO scans (
+          user_id, plant_id, image_url, ai_raw_response, 
+          is_healthy, disease_name, identification_status, confidence
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+        RETURNING id, created_at;
+      `;
+
+      // Pass NULL for plant_id
+      const scanRes = await db.query(scanQuery, [
+        userId,
+        null,
+        imageUrl,
+        JSON.stringify(aiResult),
+        false,
+        'None',
+        'Invalid Object',
+        0
+      ]);
+
+      console.log('✅ Invalid Scan saved successfully (Direct Query):', scanRes.rows[0].id);
+
+      return res.status(200).json({
+        success: true,
+        valid_plant: false, // 👈 KEY FLAG FOR FLUTTERFLOW DIALOG
+        message: "Invalid object detected",
+        scanId: scanRes.rows[0].id,
+        result: aiResult
+      });
+    }
+
+    // 🟢 SCENARIO B: VALID PLANT (Transaction Path)
+    // We only open a transaction if we are sure we need to update the encyclopedia.
+    console.log('🔌 Connecting to DB for Transaction...');
     client = await db.connect();
     await client.query('BEGIN');
 
-
-    // Step B: Update Encyclopedia (Plant Species Table)
-    const speciesQuery = `
-      INSERT INTO plant_species (scientific_name, common_name, description, care_guide)
-      VALUES ($1, $2, $3, $4)
-      ON CONFLICT (scientific_name) DO UPDATE SET 
-        common_name = EXCLUDED.common_name,
-        description = EXCLUDED.description,
-        care_guide = EXCLUDED.care_guide
-      RETURNING id;
-    `;
+    // Step B: Update Encyclopedia (ONLY IF VALID PLANT)
     let speciesId = null;
 
-    if (aiResult.identification_status === 'Confirmed') {
+    if (aiResult.identification_status === 'Confirmed' || aiResult.confidence > 0.4) {
+      const speciesQuery = `
+        INSERT INTO plant_species (scientific_name, common_name, description, care_guide)
+        VALUES ($1, $2, $3, $4)
+        ON CONFLICT (scientific_name) DO UPDATE SET 
+          common_name = EXCLUDED.common_name,
+          description = EXCLUDED.description,
+          care_guide = EXCLUDED.care_guide
+        RETURNING id;
+      `;
+
       const speciesRes = await client.query(speciesQuery, [
         aiResult.scientific_name,
         aiResult.plant_name,
@@ -76,29 +258,19 @@ exports.scanPlant = async (req, res) => {
         aiResult.care_guide
       ]);
       speciesId = speciesRes.rows[0].id;
-
       console.log('🌿 Confirmed plant species saved:', speciesId);
     } else {
-      console.log('⚠️ Plant identification uncertain — skipping species save');
+      console.log('⚠️ Skipping species save (Uncertain ID)');
     }
-
 
     // Step D: Log the Scan (Scans Table)
     const scanQuery = `
      INSERT INTO scans (
-  user_id,
-  plant_id,
-  image_url,
-  ai_raw_response,
-  is_healthy,
-  disease_name,
-  identification_status,
-  confidence
-)
-VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
-RETURNING id, created_at;
-
-
+        user_id, plant_id, image_url, ai_raw_response, 
+        is_healthy, disease_name, identification_status, confidence
+      )
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+      RETURNING id, created_at;
     `;
 
     const scanRes = await client.query(scanQuery, [
@@ -113,10 +285,13 @@ RETURNING id, created_at;
     ]);
 
     await client.query('COMMIT');
-    console.log('✅ Scan saved to database:', scanRes.rows[0].id);
+    console.log('✅ Valid Scan saved to database:', scanRes.rows[0].id);
 
+    // 🔥 RESPONSE FOR FRONTEND
     res.status(200).json({
       success: true,
+      valid_plant: true, // 👈 FLUTTERFLOW WILL NAVIGATE TO RESULT PAGE
+      message: "Scan Successful",
       scanId: scanRes.rows[0].id,
       speciesId: speciesId,
       result: aiResult,
@@ -125,11 +300,9 @@ RETURNING id, created_at;
 
   } catch (error) {
     if (client) {
-      await client.query('ROLLBACK');
-      console.log('⚠️ Database transaction rolled back');
+      try { await client.query('ROLLBACK'); } catch (e) { console.error('Rollback failed', e); }
     }
     console.error("❌ Scan Controller Error:", error.message);
-    console.error("Error stack:", error.stack);
     res.status(500).json({ error: error.message });
   } finally {
     if (client) {
