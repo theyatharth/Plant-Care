@@ -315,45 +315,33 @@ exports.scanPlant = async (req, res) => {
 // 2. Get User History
 exports.getHistory = async (req, res) => {
   try {
-    const userId = req.user.userId; // From JWT token
+    const userId = req.user.userId;
 
     console.log('📜 Fetching scan history for user:', userId);
 
+    // ✅ THE FIX: JSON Query Logic
+    // We check inside the 'ai_raw_response' JSON column.
+    // Logic: Show the scan IF "is_plant" is NOT 'false'. 
+    // (This automatically includes old scans where "is_plant" doesn't exist).
+
     const query = `
       SELECT 
-  s.id, 
-  s.created_at, 
-  s.image_url,
-  s.ai_raw_response,
-  s.corrected_response,
-  s.is_healthy,
-  s.disease_name
-FROM scans s
-WHERE s.user_id = $1
-ORDER BY s.created_at DESC
+        s.id, 
+        s.created_at, 
+        s.image_url,
+        s.ai_raw_response,
+        s.corrected_response,
+        s.is_healthy,
+        s.disease_name
+      FROM scans s
+      WHERE s.user_id = $1
+      AND (s.ai_raw_response ->> 'is_plant' IS NULL OR s.ai_raw_response ->> 'is_plant' != 'false')
+      ORDER BY s.created_at DESC
     `;
+
     const result = await db.query(query, [userId]);
 
-    console.log(`✅ Found ${result.rows.length} scans for user`);
-
-    // // Format the response to include parsed plant info
-    // const formattedScans = result.rows.map(scan => ({
-    //   id: scan.id,
-    //   createdAt: scan.created_at,
-    //   isHealthy: scan.is_healthy,
-    //   diseaseName: scan.disease_name,
-    //   imageUrl: scan.image_url,
-    //   plantName: scan.ai_raw_response?.plant_name || 'Unknown',
-    //   scientificName: scan.ai_raw_response?.scientific_name || 'Unknown',
-    //   healthStatus: scan.ai_raw_response?.health_status || 'Unknown',
-    //   confidence: scan.ai_raw_response?.confidence || 0,
-    //   fullResponse: scan.ai_raw_response
-    // // }));
-    // res.json({
-    //   success: true,
-    //   count: formattedScans.length,
-    //   scans: formattedScans
-    // });
+    console.log(`✅ Found ${result.rows.length} valid plant scans for user`);
 
     const formattedScans = result.rows.map(scan => {
       const response = scan.corrected_response || scan.ai_raw_response || {};
