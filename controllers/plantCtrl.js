@@ -335,7 +335,23 @@ exports.getHistory = async (req, res) => {
         s.disease_name
       FROM scans s
       WHERE s.user_id = $1
+      -- 1. "Not a Plant" Filter (Gatekeeper Logic)
+      -- Hides items flagged as 'Invalid Object' or is_plant: false
       AND (s.ai_raw_response ->> 'is_plant' IS NULL OR s.ai_raw_response ->> 'is_plant' != 'false')
+      AND (s.identification_status IS DISTINCT FROM 'Invalid Object')
+
+      -- 2. Confidence Filter
+      -- Hides failed scans where AI was 0% confident
+      AND s.confidence > 0
+
+      -- 3. "Double Unknown" Filter (The specific request)
+      -- Hides scans where BOTH Plant Name and Disease are Unknown.
+      -- (Keeps scans where Plant is Unknown but Disease IS known, e.g. "Leaf Spot on Unknown Plant")
+      AND NOT (
+          (s.ai_raw_response ->> 'plant_name' = 'Unknown') 
+          AND 
+          (s.disease_name = 'Unknown' OR s.ai_raw_response ->> 'disease_name' = 'Unknown')
+      )
       ORDER BY s.created_at DESC
     `;
 
