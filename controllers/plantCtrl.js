@@ -335,23 +335,32 @@ exports.getHistory = async (req, res) => {
         s.disease_name
       FROM scans s
       WHERE s.user_id = $1
-      -- 1. "Not a Plant" Filter (Gatekeeper Logic)
-      -- Hides items flagged as 'Invalid Object' or is_plant: false
+-- 1. "Not a Plant" Filter (Gatekeeper Logic)
       AND (s.ai_raw_response ->> 'is_plant' IS NULL OR s.ai_raw_response ->> 'is_plant' != 'false')
       AND (s.identification_status IS DISTINCT FROM 'Invalid Object')
 
       -- 2. Confidence Filter
-      -- Hides failed scans where AI was 0% confident
       AND s.confidence > 0
 
-      -- 3. "Double Unknown" Filter (The specific request)
-      -- Hides scans where BOTH Plant Name and Disease are Unknown.
-      -- (Keeps scans where Plant is Unknown but Disease IS known, e.g. "Leaf Spot on Unknown Plant")
+      -- 3. UPDATED "Useless Scan" Filter
+      -- Hides scans where Plant is Unknown AND (Disease is Unknown OR Healthy/None)
+      -- But keeps the scan if a "Corrected Name" exists.
       AND NOT (
-          (s.ai_raw_response ->> 'plant_name' = 'Unknown') 
+          -- Condition A: The Plant Name is effectively Unknown
+          (
+            (s.ai_raw_response ->> 'plant_name' = 'Unknown' OR s.ai_raw_response ->> 'plant_name' IS NULL)
+            AND 
+            (s.corrected_response ->> 'name' IS NULL OR s.corrected_response ->> 'name' = 'Unknown')
+          )
           AND 
-          (s.disease_name = 'Unknown' OR s.ai_raw_response ->> 'disease_name' = 'Unknown')
+          -- Condition B: The Diagnosis is not useful (Unknown or just Healthy)
+          (
+            s.disease_name IN ('Unknown', 'None') 
+            OR s.ai_raw_response ->> 'disease_name' IN ('Unknown', 'None')
+            OR s.is_healthy = true
+          )
       )
+      
       ORDER BY s.created_at DESC
     `;
 
