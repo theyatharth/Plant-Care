@@ -1,7 +1,13 @@
 /**
  * translationService.js
  *
- * Translates AI diagnosis result display fields using AWS Translate.
+ * Translates AI diagnosis result display fields using Claude Haiku via AWS Bedrock.
+ *
+ * Why Haiku (not Sonnet)?
+ *  - Already authorized — same Bedrock credentials, no new IAM permissions needed
+ *  - ~20x cheaper than Sonnet for simple translation tasks
+ *  - Single batched Claude call = faster than 11 parallel AWS Translate calls
+ *  - Fluent in all supported languages, excellent with plant/botanical terminology
  *
  * RULES:
  *  - ai_raw_response in DB is ALWAYS English. This service only translates
@@ -15,10 +21,10 @@
  *      identification_status, source
  */
 
-const { TranslateClient, TranslateTextCommand } = require('@aws-sdk/client-translate');
+const { BedrockRuntimeClient, InvokeModelCommand } = require('@aws-sdk/client-bedrock-runtime');
 require('dotenv').config();
 
-const client = new TranslateClient({
+const client = new BedrockRuntimeClient({
   region: 'us-east-1',
   credentials: {
     accessKeyId: process.env.AWS_ACCESS_KEY_ID?.trim(),
@@ -26,47 +32,24 @@ const client = new TranslateClient({
   }
 });
 
-// ── Helpers ──────────────────────────────────────────────────────────────────
-
-/**
- * Translate a single string from English to the target language.
- * Returns the original string if:
- *  - The text is null / undefined / empty
- *  - The target language is English
- *  - AWS Translate fails (graceful fallback — never crash the response)
- */
-const translateText = async (text, targetLang) => {
-  if (!text || typeof text !== 'string' || text.trim() === '') return text;
-  if (targetLang === 'en') return text;
-
-  try {
-    const command = new TranslateTextCommand({
-      Text: text,
-      SourceLanguageCode: 'en',
-      TargetLanguageCode: targetLang
-    });
-    const result = await client.send(command);
-    return result.TranslatedText || text;
-  } catch (err) {
-    // Graceful fallback: return original English on any error
-    console.warn(`⚠️ AWS Translate failed for lang "${targetLang}": ${err.message}`);
-    return text;
-  }
-};
-
-/**
- * Translate an array of strings (e.g. treatment steps).
- * Runs all translations in parallel for speed.
- */
-const translateArray = (arr, targetLang) => {
-  if (!Array.isArray(arr) || arr.length === 0) return Promise.resolve(arr);
-  return Promise.all(arr.map(item => translateText(item, targetLang)));
+// Language code → full name for the Claude prompt
+const LANGUAGE_NAMES = {
+  hi: 'Hindi',
+  es: 'Spanish',
+  fr: 'French',
+  pt: 'Portuguese',
+  de: 'German',
+  ja: 'Japanese',
+  zh: 'Chinese (Simplified)',
+  ar: 'Arabic',
+  ta: 'Tamil'
 };
 
 // ── Public API ────────────────────────────────────────────────────────────────
 
 /**
- * Translate all display fields of a diagnosis result.
+ * Translate all display fields of a diagnosis result using Claude Haiku.
+ * Makes a single Bedrock call — all fields batched into one JSON translation request.
  *
  * @param {Object} englishResult  - The English AI result from DB / Claude
  * @param {string} targetLang     - BCP-47 language code (e.g. "hi", "es")
@@ -75,57 +58,97 @@ const translateArray = (arr, targetLang) => {
 exports.translateDiagnosisResult = async (englishResult, targetLang) => {
   if (!englishResult || targetLang === 'en') return englishResult;
 
-  console.log(`🌐 Translating diagnosis to "${targetLang}"...`);
+  const languageName = LANGUAGE_NAMES[targetLang] || targetLang;
+  console.log(`🌐 Translating diagnosis to ${languageName} ("${targetLang}") via Claude Haiku...`);
 
-  // Run all independent translations in parallel for minimum latency
-  const [
-    plant_name,
-    description,
-    disease_name,
-    water,
-    sun,
-    soil,
-    fertilizer,
-    treatment
-  ] = await Promise.all([
-    // plant_name: local common name, English as fallback (AWS Translate handles this gracefully)
-    translateText(englishResult.plant_name, targetLang),
-    translateText(englishResult.description, targetLang),
-    // disease_name: display label only — health_status logic always uses the English value
-    translateText(englishResult.disease_name, targetLang),
-    // care_guide fields (null-safe)
-    translateText(englishResult.care_guide?.water, targetLang),
-    translateText(englishResult.care_guide?.sun, targetLang),
-    translateText(englishResult.care_guide?.soil, targetLang),
-    translateText(englishResult.care_guide?.fertilizer, targetLang),
-    // treatment steps array
-    translateArray(englishResult.treatment, targetLang)
-  ]);
-
-  // Build translated result — spread original first to preserve all untouched fields
-  const translated = {
-    ...englishResult,
-
-    // ✅ Translated display fields
-    plant_name,
-    description,
-    disease_name,
-    treatment,
-
-    // ✅ Translated care guide (null-safe)
-    care_guide: englishResult.care_guide
-      ? { water, sun, soil, fertilizer }
-      : null,
-
-    // ❌ NEVER translated — these drive backend logic
-    // scientific_name  → always Latin
-    // health_status    → "Healthy" / "Sick" / "Unknown" used for DB booleans
-    // is_plant         → boolean
-    // confidence       → number
-    // identification_status → used in DB queries
-    // source           → internal flag
+  // ── Build compact payload — only translatable, non-null fields ──────────────
+  const toTranslate = {
+    plant_name:   englishResult.plant_name   || null,
+    description:  englishResult.description  || null,
+    disease_name: englishResult.disease_name || null,
+    care_guide: englishResult.care_guide ? {
+      water:      englishResult.care_guide.water      || null,
+      sun:        englishResult.care_guide.sun        || null,
+      soil:       englishResult.care_guide.soil       || null,
+      fertilizer: englishResult.care_guide.fertilizer || null
+    } : null,
+    treatment: (Array.isArray(englishResult.treatment) && englishResult.treatment.length > 0)
+      ? englishResult.treatment
+      : null
   };
 
-  console.log(`✅ Translation to "${targetLang}" complete`);
-  return translated;
+  const prompt = `Translate this JSON from English to ${languageName}.
+
+RULES (follow exactly):
+- Return ONLY valid JSON. No explanation, no markdown, no code fences.
+- Translate all string values to ${languageName}.
+- For plant_name: use the well-known ${languageName} common name if it exists; otherwise keep the English name.
+- Keep null as null — do not translate null values.
+- Keep arrays as arrays — translate each string element.
+- Do not add, rename, or remove any JSON keys.
+
+JSON to translate:
+${JSON.stringify(toTranslate, null, 2)}`;
+
+  const payload = {
+    anthropic_version: 'bedrock-2023-05-31',
+    max_tokens: 1500,
+    temperature: 0.1,
+    messages: [{ role: 'user', content: prompt }]
+  };
+
+  try {
+    const command = new InvokeModelCommand({
+      modelId: 'us.anthropic.claude-3-haiku-20240307-v1:0',
+      contentType: 'application/json',
+      accept: 'application/json',
+      body: JSON.stringify(payload)
+    });
+
+    const response = await client.send(command);
+    const body = JSON.parse(new TextDecoder().decode(response.body));
+
+    let rawText = body.content[0].text
+      .replace(/```json/g, '')
+      .replace(/```/g, '')
+      .trim();
+
+    const translatedFields = JSON.parse(rawText);
+
+    // ── Merge translated display fields back, preserving all original fields ──
+    const translated = {
+      ...englishResult,
+
+      // ✅ Translated display fields (fall back to English if translation returned null)
+      plant_name:   translatedFields.plant_name   || englishResult.plant_name,
+      description:  translatedFields.description  || englishResult.description,
+      disease_name: translatedFields.disease_name || englishResult.disease_name,
+      treatment:    translatedFields.treatment    || englishResult.treatment,
+
+      // ✅ Translated care guide (null-safe)
+      care_guide: englishResult.care_guide ? {
+        water:      translatedFields.care_guide?.water      || englishResult.care_guide.water,
+        sun:        translatedFields.care_guide?.sun        || englishResult.care_guide.sun,
+        soil:       translatedFields.care_guide?.soil       || englishResult.care_guide.soil,
+        fertilizer: translatedFields.care_guide?.fertilizer || englishResult.care_guide.fertilizer
+      } : null,
+
+      // ❌ NEVER translated — backend logic depends on these being English
+      // scientific_name     → always Latin
+      // health_status       → "Healthy" / "Sick" / "Unknown" — used for is_healthy DB column
+      // is_plant            → boolean
+      // confidence          → number
+      // identification_status → used in DB queries
+      // source              → internal flag
+    };
+
+    console.log(`✅ Translation to ${languageName} complete`);
+    return translated;
+
+  } catch (err) {
+    // Graceful fallback — return English. API never crashes due to translation failure.
+    console.error(`❌ Translation to "${targetLang}" failed: ${err.message}`);
+    console.error('   Falling back to English result.');
+    return englishResult;
+  }
 };
