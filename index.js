@@ -33,7 +33,7 @@ try {
 
 // Use Routes
 app.use('/api/users', userRoutes);
-app.use('/api/plants', plantRoutes);
+app.use('/api/plants', require('./middleware/languageMiddleware'), plantRoutes);
 app.use('/api/encyclopedia', encyclopediaRoutes);
 
 // Health Check Routes

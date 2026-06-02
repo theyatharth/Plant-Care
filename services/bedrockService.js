@@ -121,7 +121,7 @@ exports.analyzeImage = async (base64Image) => {
   console.log('- Payload data length:', cleanBase64.length);
 
   const command = new InvokeModelCommand({
-    modelId: "us.anthropic.claude-3-5-sonnet-20240620-v1:0", // US Inference Profile
+    modelId: "us.anthropic.claude-sonnet-4-20250514-v1:0", // US Inference Profile
     contentType: "application/json",
     accept: "application/json",
     body: JSON.stringify(payload)
