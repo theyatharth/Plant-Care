@@ -33,16 +33,17 @@ const client = new BedrockRuntimeClient({
 });
 
 // Language code → full name for the Claude prompt
+// Must match exactly what's configured in the FlutterFlow frontend
 const LANGUAGE_NAMES = {
   hi: 'Hindi',
-  es: 'Spanish',
-  fr: 'French',
-  pt: 'Portuguese',
-  de: 'German',
-  ja: 'Japanese',
-  zh: 'Chinese (Simplified)',
-  ar: 'Arabic',
-  ta: 'Tamil'
+  gu: 'Gujarati',
+  mr: 'Marathi',
+  bn: 'Bengali',
+  pa: 'Punjabi',
+  ta: 'Tamil',
+  te: 'Telugu',
+  kn: 'Kannada',
+  ml: 'Malayalam'
 };
 
 // ── Public API ────────────────────────────────────────────────────────────────

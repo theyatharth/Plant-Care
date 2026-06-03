@@ -1,25 +1,48 @@
 /**
  * languageMiddleware.js
  *
- * Reads the Accept-Language header from every request and attaches a
- * validated language code to req.language.
+ * Reads the language preference from the request and attaches a validated
+ * language code to req.language.
  *
- * Defaults to 'en' for:
- *  - Missing header
- *  - Unsupported language codes
+ * Header lookup order (first non-empty value wins):
+ *  1. X-App-Language   — recommended header to set in FlutterFlow API calls
+ *  2. X-Language       — alternative custom header
+ *  3. Accept-Language  — standard HTTP header
+ *  4. ?lang=           — query parameter fallback
+ *
+ * Defaults to 'en' if:
+ *  - No header / param is present
+ *  - The value is an unsupported language code
  */
 
-const SUPPORTED_LANGUAGES = ['en', 'hi', 'es', 'fr', 'pt', 'de', 'ja', 'zh', 'ar', 'ta'];
+// Supported languages matching the FlutterFlow frontend setup
+const SUPPORTED_LANGUAGES = [
+  'en',  // English
+  'hi',  // Hindi
+  'gu',  // Gujarati
+  'mr',  // Marathi
+  'bn',  // Bengali
+  'pa',  // Punjabi
+  'ta',  // Tamil
+  'te',  // Telugu
+  'kn',  // Kannada
+  'ml'   // Malayalam
+];
 
 module.exports = (req, res, next) => {
-  // Accept-Language can be "hi,en-US;q=0.9" — we only care about the primary tag
-  const rawLang = req.headers['accept-language']?.split(',')[0]?.trim() || 'en';
+  // Check headers in priority order — use whichever is set first
+  const raw =
+    req.headers['x-app-language'] ||
+    req.headers['x-language'] ||
+    req.headers['accept-language'] ||
+    req.query?.lang ||
+    'en';
 
-  // Strip region subtags (e.g. "zh-CN" → "zh", "pt-BR" → "pt")
-  const lang = rawLang.split('-')[0].toLowerCase();
+  // Strip region subtags (e.g. "gu-IN" → "gu", "zh-CN" → "zh")
+  const lang = raw.split(/[,;\-]/)[0].trim().toLowerCase();
 
   req.language = SUPPORTED_LANGUAGES.includes(lang) ? lang : 'en';
 
-  console.log(`🌐 Language resolved: ${req.language} (raw: "${rawLang}")`);
+  console.log(`🌐 Language resolved: ${req.language} (raw header: "${raw}")`);
   next();
 };
