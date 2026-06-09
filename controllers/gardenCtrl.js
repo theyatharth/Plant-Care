@@ -6,9 +6,11 @@
  *  - Update care schedule frequency or toggle enabled
  *  - Mark a care task as done (recalculates next_due_at)
  *  - Get all due/overdue reminders across a user's garden
+ *  - Upload a plant photo to S3 (for manual garden adds)
  */
 
-const db = require('../configure/dbConfig');
+const db        = require('../configure/dbConfig');
+const s3Service = require('../services/s3Service');
 
 // Valid values enforced by DB CHECK constraint — mirrored here for early validation
 const VALID_ZONES   = ['living_room', 'balcony', 'terrace'];
@@ -488,6 +490,43 @@ exports.getDueReminders = async (req, res) => {
   } catch (error) {
     console.error('❌ getDueReminders Error:', error.message);
     res.status(500).json({ error: 'Failed to fetch reminders' });
+  }
+};
+
+// ─────────────────────────────────────────────────────────────
+// 9. UPLOAD PLANT IMAGE
+//    POST /api/garden/plants/upload-image
+//    Body: { image }  — base64 string (with data URI prefix)
+//    Returns: { imageUrl } — S3 public URL to pass to addPlant
+// ─────────────────────────────────────────────────────────────
+exports.uploadPlantImage = async (req, res) => {
+  const userId = req.user.userId;
+  const { image } = req.body;
+
+  if (!image) {
+    return res.status(400).json({ error: 'image (base64) is required' });
+  }
+
+  // Basic check — must be a base64 data URI or a raw base64 string
+  if (typeof image !== 'string') {
+    return res.status(400).json({ error: 'image must be a base64 string' });
+  }
+
+  try {
+    console.log(`🖼️ Garden image upload requested by user ${userId}`);
+
+    const imageUrl = await s3Service.uploadImage(image, userId);
+
+    console.log(`✅ Garden plant image uploaded to S3: ${imageUrl}`);
+
+    res.status(200).json({
+      success: true,
+      imageUrl,
+    });
+
+  } catch (error) {
+    console.error('❌ uploadPlantImage Error:', error.message);
+    res.status(500).json({ error: 'Failed to upload image. Please try again.' });
   }
 };
 

@@ -29,6 +29,10 @@ const gardenCtrl = require('../controllers/gardenCtrl');
 const { verifyToken } = require('../middleware/authMiddleware');
 
 // ── Plants ────────────────────────────────────────────
+// NOTE: /plants/upload-image MUST be registered before /plants/:plantId
+// so Express matches the literal path first (not as a plantId param)
+router.post  ('/plants/upload-image', verifyToken, gardenCtrl.uploadPlantImage);
+
 router.post  ('/plants',          verifyToken, gardenCtrl.addPlant);
 router.get   ('/plants',          verifyToken, gardenCtrl.getPlants);
 router.get   ('/plants/:plantId', verifyToken, gardenCtrl.getPlantById);
