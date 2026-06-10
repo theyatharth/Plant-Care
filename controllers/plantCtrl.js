@@ -312,7 +312,8 @@ exports.scanPlant = async (req, res) => {
       message: "Scan Successful",
       scanId: scanRes.rows[0].id,
       speciesId: speciesId,
-      result: translatedResult,   // ← translated for display
+      imageUrl: imageUrl,           // ← S3 URL — pass this to AddPlantToGarden
+      result: translatedResult,     // ← translated for display
       savedAt: scanRes.rows[0].created_at
     });
 
