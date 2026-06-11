@@ -20,13 +20,17 @@
  *
  * REMINDERS
  *   GET    /api/garden/reminders                             Get all due/overdue tasks
+ *
+ * NOTIFICATIONS
+ *   POST   /api/garden/reminders/notify                      Manually trigger push notifications (for testing)
  * ──────────────────────────────────────────────────────
  */
 
-const express    = require('express');
-const router     = express.Router();
-const gardenCtrl = require('../controllers/gardenCtrl');
-const { verifyToken } = require('../middleware/authMiddleware');
+const express              = require('express');
+const router               = express.Router();
+const gardenCtrl           = require('../controllers/gardenCtrl');
+const { verifyToken }      = require('../middleware/authMiddleware');
+const notificationService  = require('../services/notificationService');
 
 // ── Plants ────────────────────────────────────────────
 // NOTE: /plants/upload-image MUST be registered before /plants/:plantId
@@ -46,4 +50,24 @@ router.post ('/plants/:plantId/care/:scheduleId/done', verifyToken, gardenCtrl.m
 // ── Reminders ─────────────────────────────────────────
 router.get('/reminders', verifyToken, gardenCtrl.getDueReminders);
 
+// ── Notification Manual Trigger (for testing) ─────────
+// POST /api/garden/reminders/notify
+// Fires broadcastDueReminders immediately without waiting for the cron.
+// Useful for QA / testing push notifications end-to-end.
+router.post('/reminders/notify', verifyToken, async (req, res) => {
+  try {
+    console.log(`🔔 Manual notification trigger by user ${req.user.userId}`);
+    const result = await notificationService.broadcastDueReminders();
+    res.json({
+      success: true,
+      message: 'Due reminder notifications sent',
+      ...result,
+    });
+  } catch (error) {
+    console.error('❌ Manual notify error:', error.message);
+    res.status(500).json({ error: 'Failed to send notifications' });
+  }
+});
+
 module.exports = router;
+

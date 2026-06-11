@@ -360,3 +360,65 @@ exports.verifyEmailOTP = async (req, res) => {
     });
   }
 };
+
+// ─────────────────────────────────────────────────────────────
+// Register / update FCM device token
+// POST /api/users/fcm-token
+// Body: { fcmToken: string }
+// Called by the Flutter app after it gets a fresh FCM registration token
+// ─────────────────────────────────────────────────────────────
+exports.registerFcmToken = async (req, res) => {
+  const userId = req.user.userId;
+  const { fcmToken } = req.body;
+
+  if (!fcmToken || typeof fcmToken !== 'string' || fcmToken.trim() === '') {
+    return res.status(400).json({ error: 'fcmToken is required and must be a non-empty string' });
+  }
+
+  try {
+    await db.query(
+      'UPDATE users SET fcm_token = $1 WHERE id = $2',
+      [fcmToken.trim(), userId]
+    );
+
+    console.log(`📲 FCM token registered for user ${userId}`);
+    res.json({ success: true, message: 'FCM token registered successfully' });
+
+  } catch (error) {
+    console.error('❌ registerFcmToken Error:', error.message);
+    res.status(500).json({ error: 'Failed to register FCM token' });
+  }
+};
+
+// ─────────────────────────────────────────────────────────────
+// Update notification preference (enable / disable)
+// PATCH /api/users/notifications
+// Body: { enabled: boolean }
+// ─────────────────────────────────────────────────────────────
+exports.updateNotificationPreference = async (req, res) => {
+  const userId = req.user.userId;
+  const { enabled } = req.body;
+
+  if (typeof enabled !== 'boolean') {
+    return res.status(400).json({ error: '"enabled" must be a boolean (true or false)' });
+  }
+
+  try {
+    await db.query(
+      'UPDATE users SET notifications_enabled = $1 WHERE id = $2',
+      [enabled, userId]
+    );
+
+    const status = enabled ? 'enabled' : 'disabled';
+    console.log(`🔔 Notifications ${status} for user ${userId}`);
+    res.json({
+      success: true,
+      message: `Push notifications ${status}`,
+      notificationsEnabled: enabled,
+    });
+
+  } catch (error) {
+    console.error('❌ updateNotificationPreference Error:', error.message);
+    res.status(500).json({ error: 'Failed to update notification preference' });
+  }
+};

@@ -19,4 +19,8 @@ router.get('/profile/photo', verifyToken, userCtrl.getProfilePhoto);
 router.post('/request-email-otp', userCtrl.requestEmailOTP);
 router.post('/verify-email-otp', userCtrl.verifyEmailOTP);
 
+// FCM Push Notification routes
+router.post  ('/fcm-token',      verifyToken, userCtrl.registerFcmToken);            // Register/update device FCM token
+router.patch ('/notifications',  verifyToken, userCtrl.updateNotificationPreference); // Enable / disable notifications
+
 module.exports = router;

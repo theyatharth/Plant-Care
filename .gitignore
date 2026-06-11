@@ -2,8 +2,27 @@ node_modules/
 .env
 .DS_Store
 *.log
+serviceAccountKey.json
 
+# Editor files
+*.swp
+*.swo
+*.swn
+*.swm
 
+# Test & debug files
+test-*
+test_*
+debug_*
+test-images/
+ testOpenAIPlant.js
+testPlantNet.js
+generate_auth.js
+testOpenAIPlant.js
+database/
+
+# Docs (if not needed in repo)
+*.md
 
 
 

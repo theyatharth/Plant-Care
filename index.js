@@ -1,11 +1,13 @@
 const express = require('express');
 const cors = require('cors');
 const dotenv = require('dotenv');
+const cron = require('node-cron');
 const db = require('./configure/dbConfig');
 
 // Config
 dotenv.config();
 
+const notificationService = require('./services/notificationService');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
@@ -54,3 +56,22 @@ app.listen(PORT, () => {
     if (err) console.error('❌ DB connection test failed:', err.message);
   });
 });
+
+// ─────────────────────────────────────────────────────────────
+// Daily Care Reminder Cron — runs every day at 8:00 AM IST
+// IST is UTC+5:30, so 8:00 AM IST = 02:30 UTC
+// Cron format: minute hour day-of-month month day-of-week
+// ─────────────────────────────────────────────────────────────
+cron.schedule('30 2 * * *', async () => {
+  console.log('⏰ [Cron] Daily care reminder job fired at', new Date().toISOString());
+  try {
+    await notificationService.broadcastDueReminders();
+  } catch (err) {
+    console.error('❌ [Cron] Error in daily reminder job:', err.message);
+  }
+}, {
+  timezone: 'Asia/Kolkata', // Explicit IST timezone for clarity
+});
+
+console.log('⏰ Daily care reminder cron scheduled — fires at 8:00 AM IST every day');
+
