@@ -58,20 +58,29 @@ app.listen(PORT, () => {
 });
 
 // ─────────────────────────────────────────────────────────────
-// Daily Care Reminder Cron — runs every day at 8:00 AM IST
-// IST is UTC+5:30, so 8:00 AM IST = 02:30 UTC
-// Cron format: minute hour day-of-month month day-of-week
+// Care Reminder Cron — fires every 15 minutes (UTC)
+//
+// Each run reads the current UTC hour + minute, then calls
+// broadcastDueRemindersForTime() which notifies ONLY users whose
+// notification_time preference (stored in UTC) matches right now.
+//
+// 15-minute granularity: fires at :00, :15, :30, :45 of every hour.
+// This aligns with the 15-minute interval validation enforced in
+// PATCH /api/users/notifications so no user is ever missed.
 // ─────────────────────────────────────────────────────────────
-cron.schedule('30 2 * * *', async () => {
-  console.log('⏰ [Cron] Daily care reminder job fired at', new Date().toISOString());
+cron.schedule('0,15,30,45 * * * *', async () => {
+  const now       = new Date();
+  const utcHour   = now.getUTCHours();
+  const utcMinute = now.getUTCMinutes();
+
+  console.log(`⏰ [Cron] 15-min tick at ${String(utcHour).padStart(2,'0')}:${String(utcMinute).padStart(2,'0')} UTC`);
+
   try {
-    await notificationService.broadcastDueReminders();
+    await notificationService.broadcastDueRemindersForTime(utcHour, utcMinute);
   } catch (err) {
-    console.error('❌ [Cron] Error in daily reminder job:', err.message);
+    console.error('❌ [Cron] Error in care reminder job:', err.message);
   }
-}, {
-  timezone: 'Asia/Kolkata', // Explicit IST timezone for clarity
 });
 
-console.log('⏰ Daily care reminder cron scheduled — fires at 8:00 AM IST every day');
+console.log('⏰ Care reminder cron scheduled — fires every 15 minutes, matching each user\'s preferred time');
 

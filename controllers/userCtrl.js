@@ -4,6 +4,43 @@ const s3Service = require('../services/s3Service');
 const emailService = require('../services/emailService');
 const validator = require('validator');
 
+// ─────────────────────────────────────────────────────────────
+// NOTIFICATION TIME HELPERS (IST ↔ UTC)
+//
+// notification_time is stored as UTC TIME in the DB (industry std).
+// The API accepts and returns times in IST (UTC+05:30) for the app.
+// Granularity: 15-minute intervals — minutes must be 00, 15, 30, or 45.
+// ─────────────────────────────────────────────────────────────
+const IST_OFFSET_MINUTES = 330; // UTC+05:30
+const TIME_REGEX         = /^([01]\d|2[0-3]):([0-5]\d)$/;
+const VALID_NOTIF_MINUTES = new Set([0, 15, 30, 45]);
+
+/**
+ * Convert "HH:MM" IST string → "HH:MM" UTC string.
+ * Handles midnight wrap-around (e.g. "00:00" IST → "18:30" UTC).
+ */
+function istToUtc(istTimeStr) {
+  const [h, m] = istTimeStr.split(':').map(Number);
+  let totalMin  = h * 60 + m - IST_OFFSET_MINUTES;
+  if (totalMin < 0)     totalMin += 1440; // wrap past midnight
+  if (totalMin >= 1440) totalMin -= 1440;
+  const hh = String(Math.floor(totalMin / 60)).padStart(2, '0');
+  const mm = String(totalMin % 60).padStart(2, '0');
+  return `${hh}:${mm}`;
+}
+
+/**
+ * Convert UTC TIME string ("HH:MM" or "HH:MM:SS" from Postgres) → "HH:MM" IST string.
+ */
+function utcToIst(utcTimeStr) {
+  const parts    = utcTimeStr.substring(0, 5).split(':').map(Number);
+  let   totalMin = parts[0] * 60 + parts[1] + IST_OFFSET_MINUTES;
+  if (totalMin >= 1440) totalMin -= 1440;
+  const hh = String(Math.floor(totalMin / 60)).padStart(2, '0');
+  const mm = String(totalMin % 60).padStart(2, '0');
+  return `${hh}:${mm}`;
+}
+
 // Login or Register user (after OTP verification in FlutterFlow)
 exports.loginOrRegister = async (req, res) => {
   const { phone, name, email } = req.body;
@@ -91,7 +128,9 @@ exports.loginOrRegister = async (req, res) => {
 exports.getProfile = async (req, res) => {
   try {
     const result = await db.query(
-      'SELECT id, email, name, phone, profile_photo_url, created_at FROM users WHERE id = $1',
+      `SELECT id, email, name, phone, profile_photo_url, created_at,
+              notifications_enabled, notification_time
+       FROM users WHERE id = $1`,
       [req.user.userId]
     );
 
@@ -99,7 +138,20 @@ exports.getProfile = async (req, res) => {
       return res.status(404).json({ error: 'User not found' });
     }
 
-    res.json({ user: result.rows[0] });
+    const u = result.rows[0];
+    res.json({
+      user: {
+        id:                   u.id,
+        email:                u.email,
+        name:                 u.name,
+        phone:                u.phone,
+        profilePhotoUrl:      u.profile_photo_url,
+        createdAt:            u.created_at,
+        notificationsEnabled: u.notifications_enabled,
+        // Return time in IST so the Flutter app shows the user's local time
+        notificationTime:     u.notification_time ? utcToIst(u.notification_time) : '08:00',
+      },
+    });
   } catch (error) {
     console.error('Get Profile Error:', error);
     res.status(500).json({ error: 'Failed to fetch profile' });
@@ -391,30 +443,80 @@ exports.registerFcmToken = async (req, res) => {
 };
 
 // ─────────────────────────────────────────────────────────────
-// Update notification preference (enable / disable)
+// Update notification preferences (on/off + reminder time)
 // PATCH /api/users/notifications
-// Body: { enabled: boolean }
+// Body: { enabled?: boolean, notification_time?: "HH:MM" (IST, 24h) }
+//
+// notification_time rules:
+//   • Format: "HH:MM" 24-hour IST  (e.g. "09:30", "20:00")
+//   • Minutes must be 00, 15, 30, or 45  (15-minute intervals)
+//   • Stored as UTC internally; returned as IST in API responses
 // ─────────────────────────────────────────────────────────────
 exports.updateNotificationPreference = async (req, res) => {
   const userId = req.user.userId;
-  const { enabled } = req.body;
+  const { enabled, notification_time } = req.body;
 
-  if (typeof enabled !== 'boolean') {
+  // ── Validate `enabled` (optional field) ──────────────────────
+  if (enabled !== undefined && typeof enabled !== 'boolean') {
     return res.status(400).json({ error: '"enabled" must be a boolean (true or false)' });
   }
 
+  // ── Validate `notification_time` (optional field) ─────────────
+  let utcTime = null;
+  if (notification_time !== undefined) {
+    if (!TIME_REGEX.test(notification_time)) {
+      return res.status(400).json({
+        error: 'notification_time must be HH:MM in 24-hour IST format (e.g. "09:30")',
+      });
+    }
+    const minute = Number(notification_time.split(':')[1]);
+    if (!VALID_NOTIF_MINUTES.has(minute)) {
+      return res.status(400).json({
+        error: 'notification_time minutes must be 00, 15, 30, or 45 (15-minute intervals only)',
+      });
+    }
+    utcTime = istToUtc(notification_time); // convert IST → UTC before saving
+  }
+
+  // ── At least one field required ───────────────────────────────
+  if (enabled === undefined && notification_time === undefined) {
+    return res.status(400).json({
+      error: 'Provide at least one of: enabled (boolean), notification_time (HH:MM IST)',
+    });
+  }
+
   try {
+    // Build SET clause dynamically — only update fields that were sent
+    const fields = [];
+    const values = [];
+    let i = 1;
+
+    if (enabled !== undefined) {
+      fields.push(`notifications_enabled = $${i++}`);
+      values.push(enabled);
+    }
+    if (utcTime !== null) {
+      fields.push(`notification_time = $${i++}`);
+      values.push(utcTime);
+    }
+
+    values.push(userId);
     await db.query(
-      'UPDATE users SET notifications_enabled = $1 WHERE id = $2',
-      [enabled, userId]
+      `UPDATE users SET ${fields.join(', ')} WHERE id = $${i}`,
+      values
     );
 
-    const status = enabled ? 'enabled' : 'disabled';
-    console.log(`🔔 Notifications ${status} for user ${userId}`);
+    console.log(
+      `🔔 Notification prefs updated for user ${userId}` +
+      (enabled !== undefined       ? ` | enabled=${enabled}` : '') +
+      (utcTime                     ? ` | time=${utcTime} UTC (${notification_time} IST)` : '')
+    );
+
     res.json({
       success: true,
-      message: `Push notifications ${status}`,
-      notificationsEnabled: enabled,
+      message: 'Notification preferences updated',
+      ...(enabled !== undefined           && { notificationsEnabled: enabled }),
+      ...(notification_time !== undefined  && { notificationTime: notification_time }),
     });
 
   } catch (error) {
