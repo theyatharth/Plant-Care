@@ -58,36 +58,30 @@ app.listen(PORT, () => {
 });
 
 // ─────────────────────────────────────────────────────────────
-// Care Reminder Cron — fires every 15 minutes (UTC)
+// Care Reminder Cron — fires every 15 minutes
 //
-// Each run reads the current UTC hour + minute, then calls
-// broadcastDueRemindersForTime() which notifies ONLY users whose
-// notification_time preference (stored in UTC) matches right now.
+// notification_time is stored in the DB as UTC (converted from IST
+// when the user saves their preference). So we must compare against
+// the current UTC hour + minute — NOT the local/IST time.
 //
 // 15-minute granularity: fires at :00, :15, :30, :45 of every hour.
 // This aligns with the 15-minute interval validation enforced in
 // PATCH /api/users/notifications so no user is ever missed.
 // ─────────────────────────────────────────────────────────────
 cron.schedule('0,15,30,45 * * * *', async () => {
-  // 1. Get the current server time
   const now = new Date();
 
-  // 2. Force the time to convert to Indian Standard Time
-  const istString = now.toLocaleString('en-US', { timeZone: 'Asia/Kolkata' });
-  const istDate = new Date(istString);
+  // notification_time is stored as UTC → always compare in UTC
+  const utcHour   = now.getUTCHours();
+  const utcMinute = now.getUTCMinutes();
 
-  // 3. Extract the exact local hour and minute
-  const localHour = istDate.getHours();
-  const localMinute = istDate.getMinutes();
-
-  console.log(`⏰ [Cron] 15-min tick at ${String(localHour).padStart(2, '0')}:${String(localMinute).padStart(2, '0')} IST`);
+  console.log(`⏰ [Cron] 15-min tick at ${String(utcHour).padStart(2, '0')}:${String(utcMinute).padStart(2, '0')} UTC`);
 
   try {
-    // 4. Pass the local time to the database query instead of UTC
-    await notificationService.broadcastDueRemindersForTime(localHour, localMinute);
+    await notificationService.broadcastDueRemindersForTime(utcHour, utcMinute);
   } catch (err) {
     console.error('❌ [Cron] Error in care reminder job:', err.message);
   }
 });
 
-console.log('⏰ Care reminder cron scheduled — fires every 15 minutes, matching each user\'s preferred IST time');
+console.log('⏰ Care reminder cron scheduled — fires every 15 minutes, matching each user\'s preferred notification time (UTC)');
