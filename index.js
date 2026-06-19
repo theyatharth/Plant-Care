@@ -16,10 +16,10 @@ app.use(cors());
 app.use(express.json({ limit: '50mb' })); // High limit for Base64 images
 
 // Import Routes (CommonJS)
-const userRoutes        = require('./routes/userRoutes');
-const plantRoutes       = require('./routes/plantRoutes');
+const userRoutes = require('./routes/userRoutes');
+const plantRoutes = require('./routes/plantRoutes');
 const encyclopediaRoutes = require('./routes/encyclopediaRoutes');
-const gardenRoutes      = require('./routes/gardenRoutes');
+const gardenRoutes = require('./routes/gardenRoutes');
 
 console.log('📋 Loading Discord routes...');
 try {
@@ -35,10 +35,10 @@ try {
 }
 
 // Use Routes
-app.use('/api/users',       userRoutes);
-app.use('/api/plants',      require('./middleware/languageMiddleware'), plantRoutes);
+app.use('/api/users', userRoutes);
+app.use('/api/plants', require('./middleware/languageMiddleware'), plantRoutes);
 app.use('/api/encyclopedia', encyclopediaRoutes);
-app.use('/api/garden',      gardenRoutes);
+app.use('/api/garden', gardenRoutes);
 
 // Health Check Routes
 const healthCtrl = require('./controllers/healthCtrl');
@@ -69,18 +69,25 @@ app.listen(PORT, () => {
 // PATCH /api/users/notifications so no user is ever missed.
 // ─────────────────────────────────────────────────────────────
 cron.schedule('0,15,30,45 * * * *', async () => {
-  const now       = new Date();
-  const utcHour   = now.getUTCHours();
-  const utcMinute = now.getUTCMinutes();
+  // 1. Get the current server time
+  const now = new Date();
 
-  console.log(`⏰ [Cron] 15-min tick at ${String(utcHour).padStart(2,'0')}:${String(utcMinute).padStart(2,'0')} UTC`);
+  // 2. Force the time to convert to Indian Standard Time
+  const istString = now.toLocaleString('en-US', { timeZone: 'Asia/Kolkata' });
+  const istDate = new Date(istString);
+
+  // 3. Extract the exact local hour and minute
+  const localHour = istDate.getHours();
+  const localMinute = istDate.getMinutes();
+
+  console.log(`⏰ [Cron] 15-min tick at ${String(localHour).padStart(2, '0')}:${String(localMinute).padStart(2, '0')} IST`);
 
   try {
-    await notificationService.broadcastDueRemindersForTime(utcHour, utcMinute);
+    // 4. Pass the local time to the database query instead of UTC
+    await notificationService.broadcastDueRemindersForTime(localHour, localMinute);
   } catch (err) {
     console.error('❌ [Cron] Error in care reminder job:', err.message);
   }
 });
 
-console.log('⏰ Care reminder cron scheduled — fires every 15 minutes, matching each user\'s preferred time');
-
+console.log('⏰ Care reminder cron scheduled — fires every 15 minutes, matching each user\'s preferred IST time');
