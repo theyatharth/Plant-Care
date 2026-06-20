@@ -100,7 +100,7 @@ ${JSON.stringify(toTranslate, null, 2)}`;
 
   try {
     const command = new InvokeModelCommand({
-      modelId: 'us.anthropic.claude-3-haiku-20240307-v1:0',
+      modelId: 'us.anthropic.claude-3-5-haiku-20241022-v1:0', // Updated: claude-3-haiku-20240307 retired April 2026
       contentType: 'application/json',
       accept: 'application/json',
       body: JSON.stringify(payload)
