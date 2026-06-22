@@ -16,10 +16,11 @@ app.use(cors());
 app.use(express.json({ limit: '50mb' })); // High limit for Base64 images
 
 // Import Routes (CommonJS)
-const userRoutes = require('./routes/userRoutes');
-const plantRoutes = require('./routes/plantRoutes');
+const userRoutes        = require('./routes/userRoutes');
+const plantRoutes       = require('./routes/plantRoutes');
 const encyclopediaRoutes = require('./routes/encyclopediaRoutes');
-const gardenRoutes = require('./routes/gardenRoutes');
+const gardenRoutes      = require('./routes/gardenRoutes');
+const appVersionRoutes  = require('./routes/appVersionRoutes');
 
 console.log('📋 Loading Discord routes...');
 try {
@@ -35,10 +36,11 @@ try {
 }
 
 // Use Routes
-app.use('/api/users', userRoutes);
-app.use('/api/plants', require('./middleware/languageMiddleware'), plantRoutes);
+app.use('/api/users',       userRoutes);
+app.use('/api/plants',      require('./middleware/languageMiddleware'), plantRoutes);
 app.use('/api/encyclopedia', encyclopediaRoutes);
-app.use('/api/garden', gardenRoutes);
+app.use('/api/garden',      gardenRoutes);
+app.use('/api/app/version', appVersionRoutes);  // App version check & update
 
 // Health Check Routes
 const healthCtrl = require('./controllers/healthCtrl');
