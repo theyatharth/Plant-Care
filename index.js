@@ -21,6 +21,7 @@ const plantRoutes       = require('./routes/plantRoutes');
 const encyclopediaRoutes = require('./routes/encyclopediaRoutes');
 const gardenRoutes      = require('./routes/gardenRoutes');
 const appVersionRoutes  = require('./routes/appVersionRoutes');
+const healthRoutes      = require('./routes/healthRoutes');
 
 console.log('📋 Loading Discord routes...');
 try {
@@ -41,12 +42,10 @@ app.use('/api/plants',      require('./middleware/languageMiddleware'), plantRou
 app.use('/api/encyclopedia', encyclopediaRoutes);
 app.use('/api/garden',      gardenRoutes);
 app.use('/api/app/version', appVersionRoutes);  // App version check & update
+app.use('/api/health',      healthRoutes);       // Health / liveness check
 
-// Health Check Routes
-const healthCtrl = require('./controllers/healthCtrl');
+// Root ping (kept for backwards compatibility)
 app.get('/', (req, res) => res.send('🌿 Plant Care API is Running'));
-app.get('/health', healthCtrl.healthCheck);
-app.get('/diagnostic', healthCtrl.dbDiagnostic);
 
 // Start Server
 app.listen(PORT, () => {

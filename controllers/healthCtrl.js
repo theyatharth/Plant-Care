@@ -1,5 +1,23 @@
 const db = require('../configure/dbConfig');
 
+/**
+ * GET /api/health
+ * Lightweight liveness ping — no DB call.
+ * Automation workflows should hit this to verify the service is up.
+ * Returns 200 { status: "ok" } when healthy.
+ * Any non-200 response (502, 503, 404, ECONNREFUSED, timeout) means the
+ * service is down and the workflow should trigger an alert.
+ */
+exports.ping = (req, res) => {
+  res.status(200).json({
+    status: 'ok',
+    service: 'plant-care-api',
+    timestamp: new Date().toISOString(),
+    uptime: Math.floor(process.uptime()) + 's',
+    message: '🌿 Plant Care API is live'
+  });
+};
+
 // Health check endpoint
 exports.healthCheck = async (req, res) => {
   const health = {
