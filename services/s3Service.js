@@ -9,6 +9,19 @@ function base64ToBuffer(base64Image) {
   return Buffer.from(clean, "base64");
 }
 
+function detectImageType(base64Image) {
+  const match = base64Image.match(/^data:(image\/\w+);base64,/);
+  const mime = match ? match[1] : 'image/jpeg';
+  const extMap = {
+    'image/jpeg': 'jpg',
+    'image/png': 'png',
+    'image/webp': 'webp',
+    'image/gif': 'gif'
+  };
+  const ext = extMap[mime] || 'jpg';
+  return { mime, ext };
+}
+
 const BUCKET_NAME = process.env.AWS_S3_BUCKET_NAME;
 const REGION = process.env.AWS_S3_REGION || "ap-south-1";
 

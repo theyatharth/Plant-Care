@@ -14,8 +14,11 @@ router.post('/share-discord', verifyToken, plantCtrl.shareToDiscord);
 // User Feedback to Scan Result
 router.post('/scan/:scanId/feedback', verifyToken, plantCtrl.submitScanFeedback);
 
-// Plant Net API Calling
+// Plant Net API Calling (correction path)
 router.post('/scan/:scanId/correct', verifyToken, plantCtrl.handleDislikeWithCorrection);
+
+// On-demand translation for old scans (called from FlutterFlow "Translate" button)
+router.post('/scan/:scanId/translate', verifyToken, plantCtrl.translateScan);
 
 
 module.exports = router;

@@ -7,6 +7,7 @@ const db = require('../configure/dbConfig');
 const bedrockService = require('../services/bedrockService');
 const s3Service = require('../services/s3Service');
 const { applyPlantGuardrails } = require('../services/plantGuardrails');
+const translationService = require('../services/translationService');
 
 const discordUserService = require('../services/discordUserService');
 
@@ -222,6 +223,7 @@ exports.scanPlant = async (req, res) => {
 
       console.log('✅ Invalid Scan saved successfully (Direct Query):', scanRes.rows[0].id);
 
+      // Invalid plants have no meaningful content to translate
       return res.status(200).json({
         success: true,
         valid_plant: false, // 👈 KEY FLAG FOR FLUTTERFLOW DIALOG
@@ -263,13 +265,28 @@ exports.scanPlant = async (req, res) => {
       console.log('⚠️ Skipping species save (Uncertain ID)');
     }
 
-    // Step D: Log the Scan (Scans Table)
+    // Step D: Translate result for the API response (before saving, so we can cache it)
+    // ai_raw_response is ALWAYS stored in English. Translation is for display only.
+    const translatedResult = await translationService.translateDiagnosisResult(
+      aiResult,
+      req.language
+    );
+
+    // Build translated_responses cache — only store non-English translations
+    // (English users skip this entirely, saving an empty write)
+    const translatedResponsesCache = req.language !== 'en'
+      ? { [req.language]: translatedResult }
+      : {};
+
+    // Step E: Log the Scan (Scans Table)
+    // Saves English to ai_raw_response AND caches the translated result in one INSERT
     const scanQuery = `
      INSERT INTO scans (
-        user_id, plant_id, image_url, ai_raw_response, 
+        user_id, plant_id, image_url, ai_raw_response,
+        translated_responses,
         is_healthy, disease_name, identification_status, confidence
       )
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
       RETURNING id, created_at;
     `;
 
@@ -277,7 +294,8 @@ exports.scanPlant = async (req, res) => {
       userId,
       speciesId,
       imageUrl,
-      JSON.stringify(aiResult),
+      JSON.stringify(aiResult),                   // English — source of truth
+      JSON.stringify(translatedResponsesCache),    // Translation cache (may be {})
       aiResult.health_status?.toLowerCase() === 'healthy',
       aiResult.disease_name || 'None',
       aiResult.identification_status || 'Unknown',
@@ -287,14 +305,15 @@ exports.scanPlant = async (req, res) => {
     await client.query('COMMIT');
     console.log('✅ Valid Scan saved to database:', scanRes.rows[0].id);
 
-    // 🔥 RESPONSE FOR FRONTEND
+    // 🔥 RESPONSE FOR FRONTEND — send translated result
     res.status(200).json({
       success: true,
       valid_plant: true, // 👈 FLUTTERFLOW WILL NAVIGATE TO RESULT PAGE
       message: "Scan Successful",
       scanId: scanRes.rows[0].id,
       speciesId: speciesId,
-      result: aiResult,
+      imageUrl: imageUrl,           // ← S3 URL — pass this to AddPlantToGarden
+      result: translatedResult,     // ← translated for display
       savedAt: scanRes.rows[0].created_at
     });
 
@@ -425,29 +444,62 @@ exports.getScanById = async (req, res) => {
     }
 
     const scan = result.rows[0];
-    const response = scan.corrected_response || scan.ai_raw_response || {};
+    // corrected_response takes priority over ai_raw_response (PlantNet correction path)
+    const englishResponse = scan.corrected_response || scan.ai_raw_response || {};
+    const lang = req.language || 'en';
 
+    // 🌐 TRANSLATION CACHE CHECK
+    // If we have a cached translation for this language, return it immediately.
+    // translated_responses structure: { "hi": { ...translated fields }, "es": { ... } }
+    const cachedTranslation = scan.translated_responses?.[lang];
+
+    if (lang !== 'en' && cachedTranslation) {
+      console.log(`⚡ Serving cached "${lang}" translation for scan ${scanId}`);
+      return res.json({
+        scan: {
+          id: scan.id,
+          createdAt: scan.created_at,
+          imageUrl: scan.image_url,
+          plantName: cachedTranslation.common_name || cachedTranslation.plant_name || 'Unknown',
+          scientificName: englishResponse.scientific_name || 'Unknown', // Always English/Latin
+          healthStatus: englishResponse.health_status || 'Unknown',     // Always English (logic field)
+          diseaseName: cachedTranslation.disease_name || englishResponse.disease_name || 'None',
+          isHealthy: scan.is_healthy,
+          confidence: englishResponse.confidence || 0,
+          careGuide: cachedTranslation.care_guide || null,
+          treatment: cachedTranslation.treatment || null,
+          identificationSource: englishResponse.source || 'ai',
+          corrected: Boolean(scan.corrected_response),
+          raw: cachedTranslation,
+          translationCached: true
+        }
+      });
+    }
+
+    // No cache hit — return English result and signal FlutterFlow to show Translate button
     res.json({
       scan: {
         id: scan.id,
         createdAt: scan.created_at,
         imageUrl: scan.image_url,
 
-        plantName: response.common_name || response.plant_name || 'Unknown',
-        scientificName: response.scientific_name || 'Unknown',
+        plantName: englishResponse.common_name || englishResponse.plant_name || 'Unknown',
+        scientificName: englishResponse.scientific_name || 'Unknown',
 
-        healthStatus: response.health_status || 'Unknown',
-        diseaseName: response.disease_name || scan.disease_name || 'None',
+        healthStatus: englishResponse.health_status || 'Unknown',
+        diseaseName: englishResponse.disease_name || scan.disease_name || 'None',
         isHealthy: scan.is_healthy,
 
-        confidence: response.confidence || 0,
-        careGuide: response.care_guide || null,
-        treatment: response.treatment || null,
+        confidence: englishResponse.confidence || 0,
+        careGuide: englishResponse.care_guide || null,
+        treatment: englishResponse.treatment || null,
 
-        identificationSource: response.source || 'ai',
+        identificationSource: englishResponse.source || 'ai',
         corrected: Boolean(scan.corrected_response),
 
-        raw: response
+        raw: englishResponse,
+        // 👇 FlutterFlow uses this flag to decide whether to show the Translate button
+        needs_translation: lang !== 'en'
       }
     });
 
@@ -736,14 +788,92 @@ exports.handleDislikeWithCorrection = async (req, res) => {
       [finalCorrectedResult, scanId]
     );
 
-    // 📤 Send to frontend
+    // 🌐 Translate the corrected result for the API response
+    const translatedCorrectedResult = await translationService.translateDiagnosisResult(
+      finalCorrectedResult,
+      req.language
+    );
+
+    // Cache the translation in translated_responses (same pattern as scanPlant)
+    if (req.language !== 'en') {
+      await db.query(
+        `UPDATE scans
+         SET translated_responses = COALESCE(translated_responses, '{}') || $1::jsonb
+         WHERE id = $2`,
+        [JSON.stringify({ [req.language]: translatedCorrectedResult }), scanId]
+      );
+      console.log(`✅ Cached PlantNet "${req.language}" translation for scan ${scanId}`);
+    }
+
+    // 📤 Send translated result to frontend
     res.json({
       source: 'plantnet+claude',
       corrected: true,
-      data: finalCorrectedResult
+      data: translatedCorrectedResult
     });
   } catch (error) {
     console.error('PlantNet correction failed:', error.message);
     res.status(500).json({ error: 'Plant identification failed' });
+  }
+};
+
+// 6. On-Demand Translation of Old Scans
+// Called when FlutterFlow shows "Translate to [Language]" button on an old scan detail view.
+exports.translateScan = async (req, res) => {
+  const { scanId } = req.params;
+  const userId = req.user.userId;
+  const lang = req.language || 'en';
+
+  if (lang === 'en') {
+    return res.status(400).json({ error: 'Translation to English is not required' });
+  }
+
+  // Validate UUID format before hitting DB (PostgreSQL throws on invalid UUID syntax)
+  const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  if (!UUID_REGEX.test(scanId)) {
+    return res.status(404).json({ error: 'Scan not found' });
+  }
+
+  try {
+    const result = await db.query(
+      `SELECT ai_raw_response, corrected_response, translated_responses
+       FROM scans WHERE id = $1 AND user_id = $2`,
+      [scanId, userId]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Scan not found' });
+    }
+
+    const scan = result.rows[0];
+
+    // ⚡ Cache hit — return immediately without calling AWS Translate
+    const cached = scan.translated_responses?.[lang];
+    if (cached) {
+      console.log(`⚡ Cache hit: returning existing "${lang}" translation for scan ${scanId}`);
+      return res.json({ success: true, language: lang, data: cached, fromCache: true });
+    }
+
+    // Cache miss — translate now using the English source of truth
+    const englishSource = scan.corrected_response || scan.ai_raw_response || {};
+    console.log(`🌐 Cache miss: translating scan ${scanId} to "${lang}"...`);
+
+    const translated = await translationService.translateDiagnosisResult(englishSource, lang);
+
+    // Save to cache — merge into existing translated_responses using JSONB concat
+    await db.query(
+      `UPDATE scans
+       SET translated_responses = COALESCE(translated_responses, '{}') || $1::jsonb
+       WHERE id = $2`,
+      [JSON.stringify({ [lang]: translated }), scanId]
+    );
+
+    console.log(`✅ Translated and cached scan ${scanId} in "${lang}"`);
+
+    res.json({ success: true, language: lang, data: translated, fromCache: false });
+
+  } catch (error) {
+    console.error('❌ Translate Scan Error:', error.message);
+    res.status(500).json({ error: 'Translation failed' });
   }
 };

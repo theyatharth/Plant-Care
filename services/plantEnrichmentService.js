@@ -104,7 +104,7 @@ Analyze ONLY health, disease, treatment, and care.
   };
 
   const command = new InvokeModelCommand({
-    modelId: "us.anthropic.claude-3-5-sonnet-20240620-v1:0",
+    modelId: "us.anthropic.claude-sonnet-4-5-20250929-v1:0", // Updated: claude-3-5-sonnet-20240620 reached end of life
     contentType: "application/json",
     accept: "application/json",
     body: JSON.stringify(payload)
